@@ -50,7 +50,7 @@ function route() {
 const {summarize,filterBills,rankExpenses} = RecordReports;
 function metrics(stat,labels={income:"收入",expense:"支出",net:"结余"}) {
   return '<div class="metrics">' + Object.entries(labels).map(([key,label]) =>
-    '<span><small>'+h(label)+'</small><strong class="'+h(key)+'">'+money(stat[key])+'</strong></span>').join("") + '</div>';
+    '<span><small>'+h(({income:"↗ ",expense:"↘ ",net:"◈ ",assets:"◈ ",debts:"↘ "})[key]||"")+h(label)+'</small><strong class="'+h(key)+'">'+money(stat[key])+'</strong></span>').join("") + '</div>';
 }
 function parseMoney(value, signed=false, zero=false) {
   if (typeof value !== "string" || !/^-?\d+(\.\d{1,2})?$/.test(value.trim())) throw new Error("请输入最多两位小数的金额");
@@ -122,6 +122,13 @@ function billForm(original,context={}) {
     else {
       const list=state.categories.filter(c=>c.kind===kind && ((c.enabled && (!c.parent_id || by(state.categories,c.parent_id)?.enabled)) || c.id===bill.category_id));
       fields.innerHTML+=field("收支类目",select("category_id",[["","请选择"],...list.map(c=>[c.id,categoryLabel(c)])],bill.category_id));
+      fields.innerHTML+='<div class="category-picker" role="group" aria-label="选择收支类目">'+list.map(c=>
+        '<button type="button" data-category="'+c.id+'" aria-pressed="false">'+categoryIcon(c)+'<span>'+h(categoryLabel(c))+'</span></button>').join("")+'</div>';
+      const selector=fields.querySelector('[name="category_id"]');
+      const highlight=()=>fields.querySelectorAll('[data-category]').forEach(b=>b.setAttribute("aria-pressed",String(b.dataset.category===selector.value)));
+      fields.querySelectorAll('[data-category]').forEach(b=>b.onclick=()=>{selector.value=b.dataset.category;highlight();});
+      selector.onchange=highlight;highlight();
+
     }
   };
   form.elements.kind.onchange=populate;
@@ -129,9 +136,9 @@ function billForm(original,context={}) {
 }
 function viewHome() {
   const current=state.books.filter(b=>!b.archived), archived=state.books.filter(b=>b.archived);
-  const card=b=>'<article class="panel"><h2><a href="#book/'+b.id+'/'+thisMonth()+'">'+h(b.name)+'</a></h2>'+
+  const card=b=>'<article class="panel book-card"><h2><span class="book-symbol" aria-hidden="true">📒</span><a href="#book/'+b.id+'/'+thisMonth()+'">'+h(b.name)+'</a></h2>'+
     metrics(summarize(state.bills.filter(row=>row.book_id===b.id && row.day.startsWith(thisMonth()))))+
-    '<div class="toolbar">'+link("book/"+b.id+"/"+thisMonth(),"打开月历")+
+    '<div class="toolbar">'+link("book/"+b.id+"/"+thisMonth(),"打开月历")+link("inventory?book="+b.id,state.inventories.some(r=>r.book_id===b.id)?"查看资产盘点":"初始化家庭资产")+
     '<details><summary>账本操作</summary>'+btn("rename:"+b.id,"改名")+btn("archive:"+b.id,b.archived?"恢复":"归档")+'</details></div></article>';
   return heading("首页总览",thisMonth()+" · 账本收支",btn("newbook","新建账本",true))+
     AssetUI.home()+
@@ -171,7 +178,7 @@ function billTable(list) {
     const group=current===b.day?"":'<tr class="date-row"><th colspan="5">'+h(b.day)+'</th></tr>';
     current=b.day;
     const controls=b.source_type?link("assets/"+b.source_type+"/"+b.source_id,"查看关联详情"):btn("edit:"+b.id,"编辑")+btn("del:"+b.id,"删除");
-    return group+'<tr><td>'+h(categoryLabel(by(state.categories,b.category_id)) || kinds[b.kind])+'<br><small>'+h(kinds[b.kind])+'</small></td><td>'+h(by(state.books,b.book_id)?.name)+'<br><small>'+h(description)+'</small></td>'+
+    return group+'<tr><td>'+categoryIcon(by(state.categories,b.category_id))+h(categoryLabel(by(state.categories,b.category_id)) || kinds[b.kind])+'<br><small>'+h(kinds[b.kind])+'</small></td><td>'+h(by(state.books,b.book_id)?.name)+'<br><small>'+h(description)+'</small></td>'+
       '<td class="'+h(b.kind)+'">'+money(b.amount)+'</td><td>'+h(b.note)+'</td><td>'+controls+'</td></tr>';
   }).join("");
   return '<div class="panel"><table class="table"><thead><tr><th>类目 / 类型</th><th>账本与账户</th><th>金额</th><th>备注</th><th>操作</th></tr></thead><tbody>'+body+'</tbody></table></div>';
@@ -211,35 +218,37 @@ function viewStats(q) {
     field("账本",select("book",[["","全部账本"],...state.books.map(b=>[b.id,b.name])],book).replace(" required",""))+
     '<button class="primary">查看</button></form>';
   const monthly='<div class="panel"><h2>近六个月收支趋势</h2><div class="trend">'+trend.map(([m,s])=>
-    '<div><strong>'+m+'</strong><span class="income">入 '+money(s.income)+'</span><meter min="0" max="'+ceiling+'" value="'+s.income+'" aria-label="'+m+' 收入"></meter>'+
-    '<span class="expense">出 '+money(s.expense)+'</span><meter min="0" max="'+ceiling+'" value="'+s.expense+'" aria-label="'+m+' 支出"></meter></div>').join("")+'</div></div>';
+    '<div><strong>'+m+'</strong><span class="income">入 '+money(s.income)+'</span><progress class="stat-bar income-bar" max="'+ceiling+'" value="'+s.income+'" aria-label="'+m+' 收入"></progress>'+
+    '<span class="expense">出 '+money(s.expense)+'</span><progress class="stat-bar expense-bar" max="'+ceiling+'" value="'+s.expense+'" aria-label="'+m+' 支出"></progress></div>').join("")+'</div></div>';
   const ranking=rank.map(([id,value],i)=>'<li><a href="#bills'+h(filterRoute({book,from:month+"-01",to:localDate(last),kind:"expense",category:id}))+'">'+
-    h(categoryLabel(by(state.categories,id)) || "其他支出")+'</a><strong>'+money(value)+'</strong><meter min="0" max="'+rank[0][1]+'" value="'+value+'" aria-label="排行 '+(i+1)+'"></meter></li>').join("");
+    h(categoryLabel(by(state.categories,id)) || "其他支出")+'</a><strong>'+money(value)+'</strong><progress class="stat-bar rank-bar" max="'+rank[0][1]+'" value="'+value+'" aria-label="排行 '+(i+1)+'"></progress></li>').join("");
   return heading("统计分析",month+" · 月度收支")+'<div class="panel">'+statsForm+metrics(now)+'</div>'+
     '<div class="panel"><h2>上月对比 · '+previous+'</h2>'+metrics(before)+
     '<p class="muted">本月与上月差额</p>'+metrics(comparison)+'</div>'+
     monthly+'<div class="panel"><h2>支出类目排行</h2>'+(ranking?'<ol class="ranking">'+ranking+'</ol>':'<p class="muted">本月暂无支出</p>')+'</div>';
 }
+function categoryIcon(c) { return '<span class="category-icon" aria-hidden="true">'+h(state.category_icons?.[c?.icon]||"🌿")+'</span>'; }
 function viewCategories(q) {
   const kind=q.get("kind")==="income"?"income":"expense";
   const list=state.categories.filter(c=>c.kind===kind);
   const controls=c=>btn("catrename:"+c.id,"改名")+btn("cattoggle:"+c.id,c.enabled?"停用":"启用");
-  const line=c=>'<div class="category-line"><span>'+h(c.name)+'</span><div class="toolbar">'+controls(c)+'</div></div>';
+  const line=c=>'<div class="category-line"><span>'+categoryIcon(c)+h(c.name)+'</span><div class="toolbar">'+controls(c)+'</div></div>';
   const group=c=>{
     const children=list.filter(k=>k.parent_id===c.id), active=children.filter(k=>k.enabled), off=children.filter(k=>!k.enabled);
-    return '<details class="panel" open><summary>'+h(c.name)+(c.enabled?"":" · 已停用")+'</summary><div class="toolbar">'+controls(c)+
+    return '<details class="panel category-card" open><summary>'+categoryIcon(c)+h(c.name)+(c.enabled?"":" · 已停用")+'</summary><div class="toolbar">'+controls(c)+
       (c.enabled?btn("catchild:"+c.id,"添加二级类目"):"")+'</div>'+active.map(line).join("")+
       (off.length?'<details><summary>已停用的二级类目</summary>'+off.map(line).join("")+'</details>':"")+'</details>';
   };
   const roots=list.filter(c=>!c.parent_id), off=roots.filter(c=>!c.enabled);
   return heading("收支类目","管理两级分类",btn("catnew:"+kind,"新建一级类目",true))+
     '<div class="row">'+link("categories?kind=income","收入")+link("categories?kind=expense","支出")+'</div>'+
-    roots.filter(c=>c.enabled).map(group).join("")+(off.length?'<details class="panel"><summary>已停用的一级类目</summary>'+off.map(group).join("")+'</details>':"");
+    '<div class="category-grid">'+roots.filter(c=>c.enabled).map(group).join("")+'</div>'+(off.length?'<details class="panel"><summary>已停用的一级类目</summary>'+off.map(group).join("")+'</details>':"");
 }
 function categoryForm(kind,parent,old) {
   openForm(old?"修改类目名称":parent?"在「"+parent.name+"」下添加类目":"新建"+kinds[kind]+"类目",
-    field("类目名称",input("name",old?.name,'required maxlength="80"')),
-    (d,send)=>saveAndRender(send,{action:"category",name:d.name,kind,...(parent?{parent_id:parent.id}:{}),...(old?{id:old.id}:{})}));
+    field("类目名称",input("name",old?.name,'required maxlength="80"'))+
+      field("图标",select("icon",Object.entries(state.category_icons).map(([key,symbol])=>[key,symbol]),old?.icon||parent?.icon||"other")),
+    (d,send)=>saveAndRender(send,{action:"category",name:d.name,icon:d.icon,kind,...(parent?{parent_id:parent.id}:{}),...(old?{id:old.id}:{})}));
 }
 const assetTabs={accounts:"资金账户",asset:"其他资产",invest:"投资",borrow:"借入",lend:"借出"};
 const eventLabels={origin:"初始本金",repay:"本金与利息",buy:"投入",redeem:"赎回",valuation:"更新市值",yield:"到账收益"};
@@ -360,10 +369,10 @@ function render() {
     return;
   }
   const views={home:viewHome,bills:viewBills,stats:viewStats,categories:viewCategories,
-    assets:viewAssets,
+    assets:viewAssets,inventory:InventoryUI.view,
     settings:viewSettings};
   page.innerHTML=Object.hasOwn(views,key) ? views[key](q,id,month) : viewHome();
-  AssetUI.mount();
+  AssetUI.mount();InventoryUI.mount();
   } catch(error) {
     page.innerHTML=heading("页面加载失败")+'<div class="panel"><p>'+h(error.message)+'</p><p>请关闭旧的应用窗口，重新运行 start.cmd，并使用新打开的页面。</p></div>';
   }

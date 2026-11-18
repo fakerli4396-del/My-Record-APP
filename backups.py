@@ -12,6 +12,8 @@ from uuid import uuid4
 
 import ledger
 import portfolio
+import inventory
+import catalog
 
 
 def user_path(value):
@@ -68,6 +70,8 @@ def validate(path):
 def upgrade_copy(path):
     with closing(sqlite3.connect(path)) as db, db:
         portfolio.upgrade(db)
+        catalog.ensure(db)
+        inventory.ensure(db)
 
 
 def stamp(path, key, value):

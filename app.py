@@ -16,6 +16,8 @@ from urllib.parse import urlsplit, parse_qs
 import ledger
 import backups
 import portfolio
+import inventory
+import catalog
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_DB = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "My Record APP" / "record.db"
@@ -53,6 +55,8 @@ def initialize(path):
         if version == 0:
             db.executescript("BEGIN;\n" + SCHEMA + ledger.SCHEMA + "\nPRAGMA user_version = 1;\nCOMMIT;")
         portfolio.upgrade(db)
+        catalog.ensure(db)
+        inventory.ensure(db)
 
 
 class Application(ThreadingHTTPServer):
@@ -114,7 +118,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(400,{"error":"资产图表参数或数据无效"})
         files = {"/": ("index.html", "text/html"), "/style.css": ("style.css", "text/css"),
                  "/ui.js": ("ui.js", "text/javascript"), "/reports.js": ("reports.js", "text/javascript"),
-                 "/assets.js": ("assets.js", "text/javascript")}
+                 "/inventory.js": ("inventory.js", "text/javascript"), "/assets.js": ("assets.js", "text/javascript")}
         if self.path in files:
             name, content_type = files[self.path]
             return self.send_bytes(200, content_type + "; charset=utf-8", (ROOT / name).read_bytes())
@@ -129,7 +133,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(404, {"error": "操作不存在"})
         try:
             length = int(self.headers.get("Content-Length", "0"))
-            if not 0 < length <= 65536:
+            if not 0 < length <= 262144:
                 raise ValueError("请求内容大小无效")
             data = json.loads(self.rfile.read(length))
             if not isinstance(data, dict):

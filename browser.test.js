@@ -144,6 +144,20 @@ test("Windows browser: record, reconcile, navigate, back up and restore with all
     await visible("首页总览");
     assert.equal(await evaluate("typeof AssetUI"),"object");
     await goto("categories","收支类目");
+    assert.equal(await evaluate("document.querySelectorAll('.category-grid .category-card').length >= 20"),true);
+    assert.equal(await evaluate("document.querySelectorAll('.category-icon').length >= 40"),true);
+    await cdp.send("Emulation.setDeviceMetricsOverride",{width:1440,height:900,deviceScaleFactor:2,mobile:false});
+    const geometry=await evaluate(`(()=>{
+      const boxes=selector=>Array.from(document.querySelectorAll(selector),e=>e.getBoundingClientRect());
+      const nav=boxes('nav a'), cards=boxes('.category-card'), row=cards.filter(c=>c.top===cards[0].top);
+      return {brand:document.querySelector('.brand').innerText,navCount:nav.length,
+        even:nav.every(r=>Math.abs(r.height-nav[0].height)<1),height:nav.at(-1).bottom-nav[0].top,
+        columns:row.length,aligned:row.every(c=>Math.abs(c.bottom-row[0].bottom)<1)};
+    })()`);
+    assert.match(geometry.brand,/My Record/);
+    assert.equal(geometry.navCount,6);
+    assert.ok(geometry.even && geometry.height>700);
+    assert.ok(geometry.columns>=2 && geometry.aligned);
     await click('nav a[href="#assets"]');
     await visible("家庭资产概览");
     assert.doesNotMatch(await text(),/新建一级类目/);
@@ -154,6 +168,10 @@ test("Windows browser: record, reconcile, navigate, back up and restore with all
     await action("newbook"); await fill({name:"个人账本"}); await submit();
     await goto("assets?owner=personal&tab=accounts","个人资产概览");
     await action("newaccount:personal"); await fill({name:"银行卡",opening:"1000.00",opening_day:"2026-01-01"}); await submit();
+    await goto("assets?owner=personal&tab=overview","当前资产配置");
+    assert.match(await evaluate("document.querySelector('.allocation-ring').textContent"),/100.0%/);
+    assert.equal(await evaluate("document.querySelector('.ring-total').textContent"),"¥1,000.00");
+    assert.equal(await evaluate("document.querySelector('.slice').getAttribute('stroke-dasharray')"),"100 0");
     await goto("home","首页总览");
     await click('a[href^="#book/1/"]');
     await visible("月历");
@@ -161,6 +179,7 @@ test("Windows browser: record, reconcile, navigate, back up and restore with all
     await click('.cell[href="'+dayPath+'"]');
     await visible("当天暂无账单");
     await click("#quick");
+    assert.equal(await evaluate("document.querySelectorAll('dialog .category-picker button').length >= 30"),true);
     assert.equal(await evaluate("document.querySelector('dialog [name=day]').value"),dayPath.split("/").at(-1));
     await fill({amount:"200.00",category_id:"6",note:"超市购物"});
     await submit();
@@ -171,6 +190,17 @@ test("Windows browser: record, reconcile, navigate, back up and restore with all
     assert.match(await evaluate("document.querySelector("+JSON.stringify('.cell[href="'+dayPath+'"]')+").innerText"),/200\.00/);
     const month=dayPath.split("/")[2];
     await goto("stats?book=1&month="+month,"支出类目排行");
+    const bars=await evaluate(`Array.from(document.querySelectorAll('.stat-bar'),bar=>({
+      color:getComputedStyle(bar).getPropertyValue('--fill').trim(),height:bar.getBoundingClientRect().height,
+      value:bar.value,kind:bar.classList[1]}))`);
+    assert.equal(bars.filter(b=>b.kind==="income-bar").length,6);
+    assert.equal(bars.filter(b=>b.kind==="expense-bar").length,6);
+    assert.ok(bars.every(b=>b.height>=15));
+    assert.equal(new Set(bars.map(b=>b.color)).size,3);
+    assert.ok(bars.some(b=>b.kind==="rank-bar" && b.value===20000));
+    await cdp.send("Emulation.setDeviceMetricsOverride",{width:700,height:740,deviceScaleFactor:1,mobile:false});
+    assert.ok(await evaluate("document.querySelector('.trend').scrollWidth<=document.querySelector('.trend').clientWidth"));
+    await cdp.send("Emulation.clearDeviceMetricsOverride");
     await click('.ranking a');
     await visible("超市购物");
     assert.equal(await evaluate("document.querySelector('#filters [name=book]').value"),"1");
@@ -186,12 +216,47 @@ test("Windows browser: record, reconcile, navigate, back up and restore with all
     await goto("assets/account/1","当前余额");
     assert.match(await text(),/800\.00/);
     for(const [hash,title] of [["categories","收支类目"],["assets?owner=family&tab=invest","新增投资"],["settings","本地数据文件"]]) await goto(hash,title);
+    step="family opening inventory";
+    await goto("inventory?book=1","家庭资产盘点");
+    await click('[data-inventory-add="physical"]');
+    await evaluate(`(()=>{
+      const row=document.querySelector('[data-inventory-row="0"]');
+      for(const [key,value] of Object.entries({name:"盘点住宅",subtype:"property",value:"10000",cost:"8000",debt:"3000",detail:"90平方米，剩余20年"}))
+        row.querySelector('[name="'+key+'"]').value=value;
+    })()`);
+    await click("#inventory-preview");
+    assert.match(await evaluate("document.querySelector('dialog').innerText"),/10,000.00/);
+    await submit();
+    await visible("期初盘点");
+    assert.match(await text(),/盘点住宅/);
+    await goto("assets?owner=family&tab=charts","走势图");
+    const controls=await evaluate(`(()=>{
+      const bottom=e=>e.getBoundingClientRect().bottom;
+      const form=document.querySelector('#assetchart');
+      return [bottom(form.querySelector('input:not([type=hidden])')),bottom(form.querySelector('select')),bottom(form.querySelector('button'))];
+    })()`);
+    assert.ok(Math.max(...controls)-Math.min(...controls)<2);
+    assert.equal(await evaluate("document.querySelectorAll('.asset-trend .trend-point').length"),new Date().getMonth()+1);
+    assert.match(await evaluate("document.querySelector('.peak-label').textContent"),/10,000.00/);
+    await goto("settings","本地数据文件");
     const shown=await evaluate("document.querySelector('main code').textContent");
     const displayed=statSync(shown,{bigint:true}), expected=statSync(file,{bigint:true});
     assert.deepEqual([displayed.dev,displayed.ino],[expected.dev,expected.ino]);
     step="backup";
-    await action("backup"); await fill({path:folder}); await submit();
-    const source=await waitFor(()=>evaluate("document.querySelector('#notice').textContent.match(/备份已保存至 (.*)/)?.[1]"),"backup path");
+    if(process.env.RECORD_SCREENSHOT) {
+      await goto("categories","收支类目");
+      const shot=await cdp.send("Page.captureScreenshot",{format:"png"});
+      require("node:fs").writeFileSync(process.env.RECORD_SCREENSHOT,Buffer.from(shot.data,"base64"));
+      await goto("settings","本地数据文件");
+    }
+    await action("backup"); await fill({path:folder});
+    step="backup submit"; await submit();
+    step="backup result";
+    const source=await waitFor(async()=>{
+      const notice=await evaluate("document.querySelector('#notice').textContent");
+      return notice.match(/^备份已保存至 (.+)$/u)?.[1];
+    },"backup path");
+    step="edit after backup";
     await goto("home","首页总览");
     await action("newbook"); await fill({name:"临时账本"}); await submit();
     await goto("settings","本地数据文件");

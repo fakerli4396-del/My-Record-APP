@@ -1,6 +1,5 @@
 "use strict";
 const AssetUI = (() => {
-  const palette=["#2b7863","#deb94a","#6689c4","#a279b8","#ce775c","#64a4a7","#8a9c54","#bc6778"];
   const chartNames={assets:"资产",debts:"负债",net:"净资产"};
   const charts=new Map();
   let loading="";
@@ -102,7 +101,7 @@ const AssetUI = (() => {
   }
   function grouped(owner,tab) {
     const items=tab==="accounts"?state.accounts.filter(a=>a.owner===owner):state.positions.filter(p=>p.owner===owner&&p.kind===tab);
-    if(!items.length) return empty("暂无"+assetTabs[tab]+"记录",btn("addasset:"+owner,"添加资产或账户",true));
+    if(!items.length) return empty("暂无"+assetTabs[tab]+"记录",btn("addasset:"+owner,"添加资产或账户",true)+(owner==="family"?link("inventory","家庭资产盘点"):""));
     const groups=new Map();
     for(const item of items) {
       const group=tab==="accounts"?state.asset_options.accounts[item.account_type]:state.asset_options.positions[tab][item.subtype];
@@ -131,8 +130,35 @@ const AssetUI = (() => {
     else if(tab==="overview") body=composition(state.portfolio[owner].current,"assets")+composition(state.portfolio[owner].current,"debts")+
       '<div class="row">'+Object.entries(assetTabs).map(([key,label])=>link(assetURL(owner,key),label)).join("")+'</div>';
     else body='<div class="row">'+btn(tab==="accounts"?"newaccount:"+owner:"newpos:"+owner+":"+tab,"新增"+assetTabs[tab],true)+'</div>'+grouped(owner,tab);
-    return heading("资产与借贷",owners[owner]+"资产概览 · 截至 "+today(),btn("addasset:"+owner,"添加资产或账户",true))+
+    return heading("资产与借贷",owners[owner]+"资产概览 · 截至 "+today(),btn("addasset:"+owner,"添加资产或账户",true)+(owner==="family"?link("inventory","家庭资产盘点"):""))+
       '<div class="row">'+nav+'</div>'+summary(owner)+'<div class="row asset-tabs">'+tabs+'</div>'+body;
+  }
+  function allocationRing(ranked,total,label) {
+    const cx=210, cy=118, radius=74, labels=[];
+    let offset=0;
+    const slices=ranked.map(([group,value],i)=>{
+      const percent=100*value/total;
+      const angle=(offset+percent/2)*Math.PI/50-Math.PI/2;
+      if(i<3) labels.push({group,percent,i,x:cx+96*Math.cos(angle),y:cy+96*Math.sin(angle)});
+      // Keep a white separator while preserving even the smallest allocation.
+      const gap=ranked.length===1?0:Math.min(.55,percent*.18);
+      const arc='<circle class="slice tone-'+i%8+'" cx="'+cx+'" cy="'+cy+'" r="'+radius+'" pathLength="100" stroke-dasharray="'+(percent-gap)+' '+(100-percent+gap)+'" stroke-dashoffset="'+(-offset)+'" transform="rotate(-90 '+cx+' '+cy+')"/>';
+      offset+=percent;
+      return arc;
+    });
+    const notes=[];
+    for(const right of [false,true]) {
+      const side=labels.filter(point=>(point.x>=cx)===right).sort((a,b)=>a.y-b.y);
+      let last=3;
+      side.forEach(({group,percent,i,x,y},index)=>{
+        const level=Math.min(217-27*(side.length-index-1),Math.max(y,last+27));
+        last=level;
+        const edge=right?414:6, elbow=right?316:104;
+        notes.push('<g class="tone-'+i+'"><polyline points="'+x+','+y+' '+elbow+','+level+' '+edge+','+level+'"/><circle cx="'+x+'" cy="'+y+'" r="2.6"/><text x="'+edge+'" y="'+(level-5)+'" text-anchor="'+(right?'end':'start')+'">'+h([...group].slice(0,6).join(''))+' '+percent.toFixed(1)+'%</text></g>');
+      });
+    }
+    return '<svg class="allocation-ring" viewBox="0 0 420 236" role="img" aria-label="'+label+'分类占比">'+slices.join('')+notes.join('')+
+      '<text class="ring-caption" x="210" y="111">合计</text><text class="ring-total" x="210" y="136" font-size="'+Math.min(16,148/money(total).length)+'">'+money(total)+'</text></svg>';
   }
   function composition(current,metric) {
     const entries=current.entries.filter(e=>e[metric]>0).sort((a,b)=>b[metric]-a[metric]||a.id-b.id);
@@ -141,8 +167,8 @@ const AssetUI = (() => {
     const ranked=[...groups].sort((a,b)=>b[1]-a[1]);
     const total=current[metric];
     return '<section class="panel composition"><h2>当前'+chartNames[metric]+'配置</h2>'+(!total?'<p class="muted">暂无'+chartNames[metric]+'数据</p>':
-      '<div class="allocation"><canvas width="260" height="240" data-chart="donut" data-values="'+h(JSON.stringify(ranked.map(e=>e[1])))+'" aria-label="'+chartNames[metric]+'分类占比" role="img"></canvas><div class="allocation-legend">'+ranked.map(([group,value],i)=>
-        '<div class="legend-row"><span class="swatch swatch-'+i%8+'"></span><span>'+h(group)+'</span><strong>'+money(value)+'</strong><span>'+ratio(value/total)+'</span></div>').join("")+'</div></div>')+
+      '<div class="allocation">'+allocationRing(ranked,total,chartNames[metric])+'<div class="allocation-legend">'+ranked.map(([group,value],i)=>
+        '<div class="legend-row"><span class="swatch tone-'+i%8+'"></span><span>'+h(group)+'</span><strong>'+money(value)+'</strong><span>'+ratio(value/total)+'</span></div>').join("")+'</div></div>')+
       '<h3>'+chartNames[metric]+'排行榜</h3>'+(entries.length?'<ol class="asset-ranking">'+entries.map(e=>'<li><a href="#assets/'+(e.kind==="account"?"account":"detail")+'/'+e.id+'">'+h(e.name)+'</a><strong>'+money(e[metric])+'</strong></li>').join("")+'</ol>':'<p class="muted">暂无记录</p>')+'</section>';
   }
   function chartView(owner,q) {
@@ -150,7 +176,7 @@ const AssetUI = (() => {
     const metric=Object.hasOwn(chartNames,q.get("metric"))?q.get("metric"):"assets";
     const key=owner+"/"+year;
     const report=year===new Date().getFullYear()?state.portfolio[owner]:charts.get(key);
-    const controls='<form id="assetchart" class="row">'+input("owner",owner,'type="hidden"')+input("tab","charts",'type="hidden"')+
+    const controls='<form id="assetchart" class="row asset-chart-controls">'+input("owner",owner,'type="hidden"')+input("tab","charts",'type="hidden"')+
       field("年份",input("year",year,'type="number" min="1" max="9999" required'))+field("指标",select("metric",Object.entries(chartNames),metric))+'<button class="primary">查看</button></form>';
     if(!report) {
       if(loading!==key) {
@@ -163,30 +189,39 @@ const AssetUI = (() => {
     const values=report.months.map(m=>m[metric]);
     const rows=report.months.map(m=>'<tr><td>'+m.month+'月</td><td>'+(m[metric]==null?'尚未发生':money(m[metric]))+'</td></tr>').join("");
     return '<section class="panel">'+controls+'<h2>'+year+'年'+chartNames[metric]+'走势图</h2><p class="muted">按月末记录重算，本月截至今天；未来月份留空。归属和期初配置修改后历史会重算。</p>'+
-      '<canvas class="line-chart" width="900" height="280" data-chart="line" data-values="'+h(JSON.stringify(values))+'" role="img" aria-label="年度'+chartNames[metric]+'走势"></canvas>'+
+      trendChart(values,metric)+
       '<details><summary>查看每月金额</summary><table class="table"><thead><tr><th>月份</th><th>'+chartNames[metric]+'</th></tr></thead><tbody>'+rows+'</tbody></table></details></section>'+
       (metric==="net"?'<section class="panel"><h2>当前净资产状况</h2>'+metrics(report.current,{assets:"资产",debts:"负债",net:"净资产"})+
         '<div class="debt-comparison"><label>资产 <meter min="0" max="'+Math.max(1,report.current.assets,report.current.debts)+'" value="'+report.current.assets+'"></meter></label><label>负债 <meter min="0" max="'+Math.max(1,report.current.assets,report.current.debts)+'" value="'+report.current.debts+'"></meter></label></div>'+
         '<p>资产负债率 '+ratio(report.current.ratio)+'（负债 ÷ 资产，资产为零时显示 —）</p></section>':composition(report.current,metric));
   }
-  function mount() {
-    for(const canvas of page.querySelectorAll("canvas[data-chart]")) {
-      const context=canvas.getContext("2d"), values=JSON.parse(canvas.dataset.values);
-      if(canvas.dataset.chart==="donut") {
-        const total=values.reduce((a,b)=>a+b,0);let angle=-Math.PI/2;
-        values.forEach((value,i)=>{context.beginPath();context.lineWidth=34;context.strokeStyle=palette[i%palette.length];
-          const end=angle+value/total*Math.PI*2;context.arc(130,118,82,angle,end);context.stroke();angle=end;});
-        context.fillStyle="#203e32";context.textAlign="center";context.font="16px sans-serif";context.fillText("合计",130,110);context.fillText(money(total),130,135);
-      } else {
-        const points=values.filter(v=>v!=null), min=Math.min(0,...points), max=Math.max(1,...points), range=max-min;
-        const y=v=>220-(v-min)/range*180;
-        context.font="13px sans-serif";context.strokeStyle="#ccd8cf";context.fillStyle="#52665e";
-        for(let i=0;i<3;i++){const value=min+range*i/2;context.fillText(money(value),5,y(value));context.beginPath();context.moveTo(110,y(value));context.lineTo(875,y(value));context.stroke();}
-        context.strokeStyle="#2b7863";context.lineWidth=3;context.beginPath();let started=false;
-        values.forEach((value,i)=>{const x=120+i*67;if(value==null){started=false;return;}if(started)context.lineTo(x,y(value));else context.moveTo(x,y(value));started=true;});context.stroke();
-        values.forEach((value,i)=>{const x=120+i*67;context.fillStyle="#52665e";context.fillText((i+1)+"月",x-10,253);if(value!=null){context.fillStyle="#2b7863";context.beginPath();context.arc(x,y(value),4,0,Math.PI*2);context.fill();}});
+  function trendChart(values,metric) {
+    const valid=values.map((value,i)=>({value,i})).filter(p=>p.value!=null);
+    if(!valid.length)return '<p class="muted">该年份暂无已发生月份</p>';
+    const peak=valid.reduce((best,p)=>p.value>best.value?p:best);
+    const min=Math.min(0,...valid.map(p=>p.value)),max=Math.max(1,...valid.map(p=>p.value)),range=max-min;
+    const x=i=>115+i*66,y=v=>285-(v-min)/range*200;
+    const color={assets:"blue",debts:"red",net:"warm"}[metric];
+    const grid=Array.from({length:5},(_,i)=>{
+      const v=min+range*i/4;
+      return '<line x1="110" y1="'+y(v)+'" x2="850" y2="'+y(v)+'"/><text class="axis-value" x="102" y="'+(y(v)+4)+'">'+money(v)+'</text>';
+    }).join("");
+    const monthLabels=values.map((v,i)=>'<text class="axis-month" x="'+x(i)+'" y="319">'+(i+1)+'月</text>').join("");
+    const paths=[];let segment=[];
+    for(let i=0;i<=values.length;i++){
+      if(i<values.length&&values[i]!=null)segment.push([x(i),y(values[i])]);
+      else if(segment.length){
+        paths.push('<path class="trend-area" d="M '+segment[0][0]+' 285 L '+segment.map(p=>p.join(' ')).join(' L ')+' L '+segment.at(-1)[0]+' 285 Z"/><polyline class="trend-line" points="'+segment.map(p=>p.join(',')).join(' ')+'"/>');
+        segment=[];
       }
     }
+    const points=valid.map(p=>'<circle class="trend-point" tabindex="0" cx="'+x(p.i)+'" cy="'+y(p.value)+'" r="'+(p.i===peak.i?6:4.5)+'"><title>'+(p.i+1)+'月 '+money(p.value)+'</title></circle>').join("");
+    const peakX=x(peak.i),peakY=y(peak.value),tipX=Math.max(112,Math.min(704,peakX-66));
+    return '<div class="trend-highlights">'+metrics({peak:peak.value,latest:valid.at(-1).value},{peak:"最高月份 · "+(peak.i+1)+"月",latest:"最近记录 · "+(valid.at(-1).i+1)+"月"})+'</div>'+
+      '<div class="asset-trend-wrap"><svg class="asset-trend '+color+'" viewBox="0 0 880 345" role="img" aria-label="年度'+chartNames[metric]+'走势，最高'+(peak.i+1)+'月'+money(peak.value)+'">'+
+      '<g class="trend-grid">'+grid+'</g><line class="peak-guide" x1="'+peakX+'" y1="74" x2="'+peakX+'" y2="285"/>'+paths.join("")+points+monthLabels+
+      '<rect class="peak-bubble" x="'+tipX+'" y="'+(peakY-44)+'" width="140" height="29" rx="8"/><text class="peak-label" x="'+(tipX+70)+'" y="'+(peakY-25)+'">'+money(peak.value)+'</text></svg></div>';
   }
+  function mount() {}
   return {clear,home,view,accountForm,positionForm,add,valueForm,physical,mount};
 })();

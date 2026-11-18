@@ -2,6 +2,8 @@
 from datetime import date
 import re
 import portfolio
+import catalog
+import inventory
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS books (
@@ -270,6 +272,8 @@ def delete_event(db, key):
 
 def snapshot(db):
     return {
+        "inventories":inventory.history(db),
+        "category_icons":catalog.ICONS,
         "last_backup": (db.execute("SELECT value FROM settings WHERE key='last_backup'").fetchone() or [None])[0],
         "asset_values": rows(db,"SELECT * FROM asset_values ORDER BY day DESC,id DESC"),
         "portfolio": {owner:portfolio.report(db,owner,date.today().year) for owner in ("family","personal")},
@@ -291,9 +295,11 @@ def snapshot(db):
 def save_category(db, data):
     key = data.get("id")
     label = name(data.get("name"))
+    old = find(db,"categories",key) if key is not None else None
+    icon = one_of(data.get("icon",old["icon"] if old else "other"),catalog.ICONS)
     if key is not None:
         find(db, "categories", key)
-        db.execute("UPDATE categories SET name=? WHERE id=?", (label, key))
+        db.execute("UPDATE categories SET name=?,icon=? WHERE id=?", (label,icon,key))
         return key
     kind = one_of(data.get("kind"), ("income", "expense"))
     parent_id = data.get("parent_id")
@@ -301,12 +307,14 @@ def save_category(db, data):
         parent = find(db, "categories", parent_id)
         if parent["kind"] != kind or parent["parent_id"] or not parent["enabled"]:
             raise ValueError("请选择启用中的同类型一级类目")
-    return db.execute("INSERT INTO categories(name,kind,parent_id) VALUES (?,?,?)", (label,kind,parent_id)).lastrowid
+    return db.execute("INSERT INTO categories(name,kind,parent_id,icon) VALUES (?,?,?,?)", (label,kind,parent_id,icon)).lastrowid
 
 
 def mutate(db, data):
     operation = data.get("action")
     key = data.get("id")
+    if operation == "inventory":
+        return inventory.apply(db,data)
     if operation == "book":
         if key is None:
             return db.execute("INSERT INTO books(name) VALUES (?)", (name(data.get("name")),)).lastrowid
