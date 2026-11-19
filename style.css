@@ -123,3 +123,87 @@ dialog{background:#fffdf7;box-shadow:-10px 0 40px #322e2614;padding:26px;width:m
 .inventory-footer{position:sticky;bottom:12px;box-shadow:0 4px 24px #645e4320}
 #inventory-error{color:#bc3944}
 .inventory-scroll{overflow:auto}
+
+#filters .toolbar{gap:12px;margin-left:8px;padding-top:8px}
+.aligned-controls{align-items:flex-end;gap:14px}
+.aligned-controls input,.aligned-controls select,.aligned-controls button{height:44px}
+.budget-card{background:linear-gradient(135deg,#fff9dd,#fffef8)}
+.budget-bottom{display:flex;align-items:center;flex-wrap:wrap;gap:18px;border-top:1px solid #eadfc9;margin-top:18px;padding-top:16px}
+.selected-day{background:#f5d2db;border-color:#d77894}
+.rank-item{display:flex;gap:12px;padding:15px 0!important;border-bottom:1px solid #eee5dc}
+.rank-item>div{flex:1;min-width:0}.rank-item strong{float:right}.rank-item p{margin:5px 0}
+.more-ranking summary{padding:16px;text-align:center;color:#bd617c;cursor:pointer}
+.analysis-trend{width:100%;min-width:580px;--color:#d17d95}
+.analysis-trend polyline{fill:none;stroke:var(--color);stroke-width:3}
+.analysis-trend circle{fill:#fff;stroke:var(--color);stroke-width:2}
+.analysis-trend line{stroke:#d9d9cf}.analysis-trend text{fill:#77796d;font-size:12px}
+.loan-board{white-space:nowrap;font-variant-numeric:tabular-nums}
+.loan-board th,.loan-board td{min-width:115px}.loan-board .planned{background:#e3efcd}
+
+.current-book{display:flex;gap:20px;align-items:end;flex-wrap:wrap}
+.current-book p{margin:0;padding-bottom:10px}
+.ocr-months{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+#recognized-rows fieldset{border:1px solid #e5d7bf;border-radius:14px;padding:14px;margin-bottom:18px;display:grid;gap:10px}
+.checkline{display:flex;align-items:center;gap:8px}
+#drawer pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}
+
+/* Shared field geometry keeps labels, controls and action rows on one baseline. */
+:root{--control-height:44px;--field-gap:8px}
+input:not([type=checkbox]):not([type=hidden]):not([type=file]),select,button,.button{min-height:var(--control-height)}
+input[type=checkbox]{min-height:0}
+label{gap:var(--field-gap)}
+.row:has(>label),.aligned-controls,.asset-chart-controls,.inventory-controls{align-items:flex-end;column-gap:14px;row-gap:18px}
+.row:has(>label)>button,.aligned-controls>button,.asset-chart-controls>button{height:var(--control-height);min-height:var(--control-height);margin:0;box-shadow:none}
+.filter-grid{gap:18px 16px;align-items:end;grid-template-columns:repeat(auto-fit,minmax(180px,1fr))}
+.filter-grid>label{min-width:0}
+.filter-grid input,.filter-grid select{width:100%;height:var(--control-height)}
+#filters>.toolbar{margin:0;padding:0;gap:12px;align-items:center}
+#filters>.toolbar>button,#filters>.toolbar>.button{height:var(--control-height);box-shadow:none;display:inline-flex;align-items:center;justify-content:center}
+#filters+.row,.row:has(#bill-book-select){align-items:flex-end;gap:14px}
+.row:has(#bill-book-select)>.button{height:var(--control-height);display:inline-flex;align-items:center;justify-content:center}
+
+.asset-module>.heading{margin-bottom:24px}
+
+
+
+.asset-module .wealth-summary .metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));justify-items:start;gap:18px}
+
+
+.asset-module .table th{font-weight:650}
+.asset-module .table th,.asset-module .table td{vertical-align:middle}
+.loan-panel{text-align:center;padding:24px}
+.loan-panel>h2{margin-bottom:20px}
+.loan-panel>button{margin-bottom:20px}
+.board-controls{justify-content:center;gap:16px;margin:0 auto 22px}
+.board-controls label{width:160px;max-width:100%;text-align:center}
+.board-controls label input,.board-controls label select{width:100%;height:var(--control-height);text-align:center}
+.loan-board{border-collapse:separate;border-spacing:0;width:100%;font-size:14px}
+.loan-board thead th{background:#f8f1dc;border-bottom:2px solid #e3d5ae}
+.loan-board th,.loan-board td{padding:16px 14px;min-width:128px;text-align:center;vertical-align:middle}
+.loan-board .board-content{min-width:180px}
+.loan-board .board-actions{min-width:172px}
+.board-name{color:var(--ink);text-decoration:none;font-weight:650}
+.board-name:hover{text-decoration:underline;color:#976126}
+.loan-board .board-actions button{white-space:nowrap;min-height:38px;padding:6px 12px}
+.loan-board .planned{background:#eaf3dd;color:#315d36}
+.loan-board tbody tr:hover td,.loan-board tbody tr:hover th{background:#fff7df}
+.loan-board tbody tr:last-child th,.loan-board tbody tr:last-child td{background:#f8f1dc;border-top:2px solid #e3d5ae;font-weight:700}
+
+
+
+@media(max-width:760px){.filter-grid{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}.board-controls label{width:130px}.loan-panel{padding:14px}}
+
+
+
+
+
+
+
+
+
+.category-line .toolbar{margin:0;align-items:center;justify-content:flex-end}
+.category-line{min-height:64px;align-items:center}
+.toolbar>button,.toolbar>.button{display:inline-flex;align-items:center;justify-content:center}
+.inventory-item>label{grid-template-rows:minmax(22px,auto) 44px;align-content:end}
+.inventory-item input,.inventory-item select{height:44px}
+@media(max-width:760px){.asset-module .wealth-summary .metrics{grid-template-columns:1fr}}

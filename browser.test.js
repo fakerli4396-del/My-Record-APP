@@ -141,8 +141,10 @@ test("Windows browser: record, reconcile, navigate, back up and restore with all
       await evaluate("location.hash="+JSON.stringify(hash));
       await visible(title);
     };
+    step="home load";
     await visible("首页总览");
     assert.equal(await evaluate("typeof AssetUI"),"object");
+    step="category and asset navigation";
     await goto("categories","收支类目");
     assert.equal(await evaluate("document.querySelectorAll('.category-grid .category-card').length >= 20"),true);
     assert.equal(await evaluate("document.querySelectorAll('.category-icon').length >= 40"),true);
@@ -164,6 +166,7 @@ test("Windows browser: record, reconcile, navigate, back up and restore with all
     await visible("当前资产配置");
     await goto("home","首页总览");
     assert.equal(await evaluate("document.querySelectorAll('.home-wealth [data-owner]').length"),2);
+    step="book and account setup";
     await action("newbook"); await fill({name:"家庭账本"}); await submit();
     await action("newbook"); await fill({name:"个人账本"}); await submit();
     await goto("assets?owner=personal&tab=accounts","个人资产概览");
@@ -173,6 +176,14 @@ test("Windows browser: record, reconcile, navigate, back up and restore with all
     assert.equal(await evaluate("document.querySelector('.ring-total').textContent"),"¥1,000.00");
     assert.equal(await evaluate("document.querySelector('.slice').getAttribute('stroke-dasharray')"),"100 0");
     await goto("home","首页总览");
+    step="current book defaults";
+    for(const id of ["2","1"]){
+      await evaluate("(()=>{const el=document.querySelector('[name=current_book]');el.value="+JSON.stringify(id)+";el.dispatchEvent(new Event('change'));})()");
+      await waitFor(()=>evaluate("state.current_book === "+JSON.stringify(id)),"current book saved");
+      await click("#quick");
+      assert.equal(await evaluate("document.querySelector('dialog [name=book_id]').value"),id);
+      await click("dialog [data-close]");
+    }
     await click('a[href^="#book/1/"]');
     await visible("月历");
     const dayPath=await evaluate("document.querySelectorAll('.cell')[11].hash");
@@ -189,6 +200,61 @@ test("Windows browser: record, reconcile, navigate, back up and restore with all
     await visible("月历");
     assert.match(await evaluate("document.querySelector("+JSON.stringify('.cell[href="'+dayPath+'"]')+").innerText"),/200\.00/);
     const month=dayPath.split("/")[2];
+    step="budget, bill calendar and period analysis";
+    await goto("bills?book=1&month="+month,"账单明细");
+    await goto("bills?month="+month,"账单明细");
+    const alignment=await evaluate(`(()=>{
+      const fields=[...document.querySelectorAll('#filters>label')];
+      const boxes=fields.map(f=>f.querySelector('input,select').getBoundingClientRect());
+      return {heights:boxes.map(b=>b.height),tops:fields.slice(0,2).map(f=>f.getBoundingClientRect().top),
+        toolbar:[...document.querySelectorAll('#filters>.toolbar>button,#filters>.toolbar>.button')].map(b=>b.getBoundingClientRect().height)};
+    })()`);
+    assert.ok(alignment.heights.every(h=>Math.abs(h-44)<1));
+    assert.ok(alignment.toolbar.every(h=>Math.abs(h-44)<1));
+    assert.ok(Math.abs(alignment.tops[0]-alignment.tops[1])<1);
+    await action("budget::"+month);
+    assert.equal(await evaluate("document.querySelectorAll('dialog [name=book_id] option').length"),2);
+    await fill({book_id:"1"});await fill({amount:"100"});await submit();
+    assert.match(await text(),/本月预算超支/);
+    await goto("bills?book=1&month="+month+"&view=calendar&day="+dayPath.split("/").at(-1),"当日收支明细");
+    assert.match(await text(),/超市购物/);
+    assert.ok(await evaluate("document.querySelector('.selected-day')"));
+    for(const period of ["week","month","year"]){
+      await goto("stats?book=1&month="+month+"&period="+period+"&kind=income","收入明细排行");
+      assert.equal(await evaluate("document.querySelector('#statsfilter [name=period]').value"),period);
+    }
+    await evaluate("(async()=>{await api('/api/action',{action:'position',kind:'borrow',owner:'family',name:'测试借贷',day:today(),opening_only:true,principal:100000,request_id:crypto.randomUUID()});await refresh();})()");
+    await goto("assets?owner=family&tab=borrow","负债明细看板");
+    const loanID=await evaluate("state.positions.find(p=>p.name==='测试借贷').id");
+    await action("loanplan:"+loanID);await fill({book_id:"1",annual_rate:"3.5",m0:"100"});await submit();
+    assert.match(await text(),/3.5%/);
+    assert.equal(await evaluate("document.querySelectorAll('.board-content button').length"),0);
+    assert.equal(await evaluate("document.querySelector('.loan-board thead th:last-child').textContent"),"操作");
+    assert.ok(await evaluate("[...document.querySelectorAll('.loan-board th,.loan-board td')].every(e=>getComputedStyle(e).textAlign==='center'&&getComputedStyle(e).verticalAlign==='middle')"));
+    const boardAlignment=await evaluate(`(()=>{
+      const form=document.querySelector('.board-controls'),controls=[...form.querySelectorAll('input:not([type=hidden]),select,button')].map(e=>e.getBoundingClientRect());
+      return {bottoms:controls.map(c=>c.bottom),left:controls[0].left,right:controls.at(-1).right,center:form.getBoundingClientRect().left+form.getBoundingClientRect().width/2};
+    })()`);
+    assert.ok(Math.max(...boardAlignment.bottoms)-Math.min(...boardAlignment.bottoms)<1);
+    assert.ok(Math.abs((boardAlignment.left+boardAlignment.right)/2-boardAlignment.center)<2);
+    await cdp.send("Emulation.setDeviceMetricsOverride",{width:800,height:800,deviceScaleFactor:1,mobile:false});
+    assert.ok(await evaluate("document.querySelector('.loan-panel').getBoundingClientRect().right<=innerWidth"));
+    await cdp.send("Emulation.clearDeviceMetricsOverride");
+
+    await goto("assets?owner=personal&tab=lend","借款应收看板");
+    await goto("settings","本地数据文件");
+    await action("restore");
+    assert.equal(await evaluate("document.querySelector('#import-upload').accept"),".db,.xls,.xlsx");
+    await click("dialog [data-close]");
+    await goto("assets?owner=family&tab=borrow","负债明细看板");
+    await action("imageimport:family:borrow");
+    assert.ok(await evaluate("document.querySelector('#ocr-file').accept.includes('image/png')"));
+    await click("dialog [data-close]");
+    await goto("settings","本地数据文件");
+    await action("exportdata");
+    assert.equal(await evaluate("document.querySelectorAll('dialog [name=format] option').length"),3);
+    await click("dialog [data-close]");
+    step="statistics regression";
     await goto("stats?book=1&month="+month,"支出类目排行");
     const bars=await evaluate(`Array.from(document.querySelectorAll('.stat-bar'),bar=>({
       color:getComputedStyle(bar).getPropertyValue('--fill').trim(),height:bar.getBoundingClientRect().height,

@@ -3,6 +3,8 @@ from datetime import date
 import re
 import portfolio
 import catalog
+import image_import
+import planning
 import inventory
 
 SCHEMA = """
@@ -272,7 +274,14 @@ def delete_event(db, key):
 
 def snapshot(db):
     return {
+        "credit_plans":planning.rows(db,"credit_plans"),
+        "credit_installments":planning.rows(db,"credit_installments"),
+        "budgets":planning.rows(db,"budgets"),
+        "loan_plans":planning.rows(db,"loan_plans"),
+        "installments":planning.rows(db,"installments"),
         "inventories":inventory.history(db),
+        "forecast_items":planning.rows(db,"forecast_items"),
+        "current_book":(db.execute("SELECT value FROM settings WHERE key='current_book'").fetchone() or [None])[0],
         "category_icons":catalog.ICONS,
         "last_backup": (db.execute("SELECT value FROM settings WHERE key='last_backup'").fetchone() or [None])[0],
         "asset_values": rows(db,"SELECT * FROM asset_values ORDER BY day DESC,id DESC"),
@@ -313,8 +322,25 @@ def save_category(db, data):
 def mutate(db, data):
     operation = data.get("action")
     key = data.get("id")
+    if operation in ("budget","loan_plan"):
+        return planning.save(db,data)
     if operation == "inventory":
         return inventory.apply(db,data)
+    if operation == "forecast_plan":
+        find(db,"forecast_items",key)
+        if type(data.get("year"))!=int or not 1<=data["year"]<=9999: raise ValueError("年份无效")
+        values=data.get("months")
+        if not isinstance(values,list) or len(values)!=12: raise ValueError("请填写12个月计划")
+        import json
+        db.execute("UPDATE forecast_items SET year=?,months=? WHERE id=?",(data["year"],json.dumps([cents(v,0) for v in values]),key))
+        return key
+    if operation == "image_import":
+        return image_import.apply(db,data)
+    if operation == "current_book":
+        book=find(db,"books",data.get("book_id"))
+        if book["archived"]: raise ValueError("请选择使用中的账本")
+        db.execute("INSERT OR REPLACE INTO settings VALUES ('current_book',?)",(str(book["id"]),))
+        return book["id"]
     if operation == "book":
         if key is None:
             return db.execute("INSERT INTO books(name) VALUES (?)", (name(data.get("name")),)).lastrowid

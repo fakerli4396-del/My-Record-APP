@@ -15,7 +15,11 @@ from urllib.parse import urlsplit, parse_qs
 
 import ledger
 import backups
+import exchange
 import portfolio
+import recognition_repair
+import image_import
+import planning
 import inventory
 import catalog
 
@@ -57,6 +61,17 @@ def initialize(path):
         portfolio.upgrade(db)
         catalog.ensure(db)
         inventory.ensure(db)
+        planning.ensure(db)
+        image_import.ensure(db)
+
+    with connect(path) as db:
+        repairs=recognition_repair.plan(db)
+    if any(repairs.values()):
+        folder=path.parent/"recognition-repair-backups"
+        folder.mkdir(exist_ok=True)
+        backups.create_backup(path,folder,record=False)
+        with connect(path) as db:
+            recognition_repair.apply(db,recognition_repair.plan(db))
 
 
 class Application(ThreadingHTTPServer):
@@ -118,7 +133,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(400,{"error":"资产图表参数或数据无效"})
         files = {"/": ("index.html", "text/html"), "/style.css": ("style.css", "text/css"),
                  "/ui.js": ("ui.js", "text/javascript"), "/reports.js": ("reports.js", "text/javascript"),
-                 "/inventory.js": ("inventory.js", "text/javascript"), "/assets.js": ("assets.js", "text/javascript")}
+                 "/ocr-ui.js": ("ocr-ui.js", "text/javascript"), "/workspace-ui.js": ("workspace-ui.js", "text/javascript"), "/inventory.js": ("inventory.js", "text/javascript"), "/assets.js": ("assets.js", "text/javascript")}
         if self.path in files:
             name, content_type = files[self.path]
             return self.send_bytes(200, content_type + "; charset=utf-8", (ROOT / name).read_bytes())
@@ -133,7 +148,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(404, {"error": "操作不存在"})
         try:
             length = int(self.headers.get("Content-Length", "0"))
-            if not 0 < length <= 262144:
+            if not 0 < length <= 15000000:
                 raise ValueError("请求内容大小无效")
             data = json.loads(self.rfile.read(length))
             if not isinstance(data, dict):
@@ -158,6 +173,18 @@ class Handler(BaseHTTPRequestHandler):
     def files(self, data):
         action = data.get("action")
         path = self.server.database
+        if action == "recognize_image":
+            return image_import.recognize(data)
+        if action == "import_upload":
+            return exchange.upload(path,data)
+        if action == "export_data":
+            return exchange.export(path,data)
+        if action in ("import_preview","import_restore"):
+            result=exchange.incoming(path,data,action=="import_restore")
+            if action=="import_restore":
+                self.server.token=secrets.token_urlsafe(32)
+                self.server.instance=secrets.token_urlsafe(18)
+            return result
         if action == "backup":
             return backups.create_backup(path, backups.user_path(data.get("path")))
         if action == "preview":

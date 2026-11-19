@@ -107,7 +107,7 @@ function billForm(original,context={}) {
   const form=openForm(original?"编辑账单":"记一笔",
     field("类型",select("kind",Object.entries(kinds).slice(0,3),bill.kind || "expense"))+
     field("金额（元）",moneyInput("amount",bill.amount))+
-    field("账本",select("book_id",books.map(b=>[b.id,b.name]),bill.book_id||context.book))+
+    field("账本",select("book_id",books.map(b=>[b.id,b.name]),bill.book_id||context.book||state.current_book))+
     field("日期",input("day",bill.day || context.day || today(),'required type="date"'))+
     '<div id="bill-fields"></div>'+field("备注",input("note",bill.note,'maxlength="500"')),
     (d,send)=>saveAndRender(send,{action:"bill",...(original?{id:original.id}:{}),...d,amount:parseMoney(d.amount),
@@ -141,6 +141,7 @@ function viewHome() {
     '<div class="toolbar">'+link("book/"+b.id+"/"+thisMonth(),"打开月历")+link("inventory?book="+b.id,state.inventories.some(r=>r.book_id===b.id)?"查看资产盘点":"初始化家庭资产")+
     '<details><summary>账本操作</summary>'+btn("rename:"+b.id,"改名")+btn("archive:"+b.id,b.archived?"恢复":"归档")+'</details></div></article>';
   return heading("首页总览",thisMonth()+" · 账本收支",btn("newbook","新建账本",true))+
+    '<section class="panel current-book">'+field("当前操作账本",select("current_book",current.map(b=>[b.id,b.name]),state.current_book||current[0]?.id))+'<p class="muted">点击“记一笔”时默认使用此账本</p></section>'+
     AssetUI.home()+
     (current.length?'<div class="grid">'+current.map(card).join("")+'</div>':empty(state.books.length?"暂无使用中的账本":"还没有账本",btn("newbook",state.books.length?"新建账本":"新建第一个账本",true)))+
     '<details class="panel"><summary>已归档账本（'+archived.length+'）</summary><div class="grid">'+archived.map(card).join("")+'</div></details>';
@@ -188,10 +189,10 @@ function filterRoute(values) {
   for (const [key,value] of Object.entries(values)) if(value) params.set(key,value);
   return params.size ? "?"+params.toString() : "";
 }
-function viewBills(q) {
+function baseBills(q) {
   const filters=Object.fromEntries(q);
   const all=(key,label,choices)=>field(label,select(key,[["", "全部"],...choices],q.get(key)||"").replace(" required",""));
-  const form='<form id="filters" class="filter-grid">'+
+  const form='<form id="filters" class="filter-grid">'+field("月份",input("month",q.get("month")||thisMonth(),'type="month"'))+input("view",q.get("view")||"list",'type="hidden"')+
     field("开始日期",input("from",q.get("from"),'type="date"'))+field("结束日期",input("to",q.get("to"),'type="date"'))+
     all("book","账本",state.books.map(b=>[b.id,b.name]))+all("kind","类型",Object.entries(kinds))+
     all("category","类目",state.categories.map(c=>[c.id,categoryLabel(c)]))+
@@ -202,7 +203,7 @@ function viewBills(q) {
   return heading("账单明细",list.length+" 笔记录",btn("quick","记一笔",true))+
     '<div class="panel">'+form+'</div>'+billTable(list);
 }
-function viewStats(q) {
+function legacyStats(q) {
   const month=monthOf(q.get("month")), book=q.get("book") || "";
   const list=filterBills(state.bills,{book}), current=list.filter(b=>b.day.startsWith(month));
   const previous=monthShift(month,-1);
@@ -253,7 +254,7 @@ function categoryForm(kind,parent,old) {
 const assetTabs={accounts:"资金账户",asset:"其他资产",invest:"投资",borrow:"借入",lend:"借出"};
 const eventLabels={origin:"初始本金",repay:"本金与利息",buy:"投入",redeem:"赎回",valuation:"更新市值",yield:"到账收益"};
 function assetURL(owner,tab) { return "assets"+filterRoute({owner,tab}); }
-function viewAssets(q,sub,id) { return AssetUI.view(q,sub,id); }
+function viewAssets(q,sub,id) { return '<div class="asset-module">'+AssetUI.view(q,sub,id)+'</div>'; }
 function tabLink(url,label,current) {
   return '<a class="button'+(current?' active':'')+'" '+(current?'aria-current="true" ':'')+'href="#'+h(url)+'">'+h(label)+'</a>';
 }
@@ -310,16 +311,25 @@ function viewSettings() {
   return heading("数据与设置","本地数据和完整备份")+
     '<div class="panel"><h2>本地数据文件</h2><code>'+h(session.database)+'</code><p>最近成功备份 '+h(state.last_backup || "暂无")+'</p></div>'+
     '<div class="grid"><section class="panel"><h2>创建备份</h2><p>将所有账本、流水和资产记录保存到指定目录。</p>'+
-    btn("backup","创建备份",true)+'</section><section class="panel"><h2>恢复备份</h2><p>选择文件后先预览。确认恢复时会替换当前账本。</p>'+
+    btn("backup","创建完整 .db 备份",true)+btn("exportdata","选择范围与格式导出")+'</section><section class="panel"><h2>导入 / 恢复</h2><p>支持 .db、.xlsx、.xls。选择文件后先预览，确认后替换当前全部数据，并先自动备份当前版本。</p>'+
     btn("restore","选择备份文件")+'</section></div>';
 }
 function fileForm(restoring) {
   const title=restoring?"选择备份文件":"选择备份目录";
-  const form=openForm(title,field(restoring?"备份文件完整路径":"备份目录完整路径",input("path","","required"))+
+  const form=openForm(title,(restoring?field("选择本机文件（.db / .xls / .xlsx）",'<input id="import-upload" type="file" accept=".db,.xls,.xlsx">'):"")+field(restoring?"备份文件完整路径":"备份目录完整路径",input("path","",restoring?"":"required"))+
     btn("unused",title+"…"),async d=>{
       if(restoring) {
-        const preview=await api("/api/files",{action:"preview",path:d.path});
-        setTimeout(()=>confirmRestore(d.path,preview),0);
+        const file=form.querySelector("#import-upload").files[0];
+        let preview,path=d.path;
+        if(file){
+          if(file.size>10*1024*1024)throw new Error("超过10MB，请通过完整路径导入");
+          const content=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(",")[1]);reader.onerror=()=>reject(new Error("文件读取失败"));reader.readAsDataURL(file);});
+          preview=await api("/api/files",{action:"import_upload",name:file.name,content});path=preview.path;
+        }else{
+          if(!path.trim())throw new Error("请选择文件或填写完整路径");
+          preview=await api("/api/files",{action:"import_preview",path});
+        }
+        setTimeout(()=>confirmRestore(path,preview),0);
       } else {
         const result=await api("/api/files",{action:"backup",path:d.path});
         await refresh();render();
@@ -347,7 +357,7 @@ function confirmRestore(path,preview) {
     '<p>备份时间 '+h(preview.time || "未记录")+'</p><p>账本 '+preview.books+' 个 · 账单 '+preview.bills+' 笔</p>'+
     '<p>确认后先备份当前数据，再用所选文件替换。也可以取消。</p>',
     async()=>{
-      await api("/api/files",{action:"restore",path,fingerprint:preview.fingerprint});
+      await api("/api/files",{action:"import_restore",path,fingerprint:preview.fingerprint});
       session=await api("/api/session");
       await refresh();
       location.hash="home";
@@ -368,20 +378,35 @@ function render() {
       '<div class="panel">'+metrics(summarize(list))+'</div>'+(list.length?billTable(list):empty("当天暂无账单",btn("quick","记一笔",true))) : viewCalendar(book,selected);
     return;
   }
-  const views={home:viewHome,bills:viewBills,stats:viewStats,categories:viewCategories,
+  const views={home:viewHome,bills:WorkspaceUI.bills,stats:WorkspaceUI.stats,categories:viewCategories,
     assets:viewAssets,inventory:InventoryUI.view,
     settings:viewSettings};
   page.innerHTML=Object.hasOwn(views,key) ? views[key](q,id,month) : viewHome();
   AssetUI.mount();InventoryUI.mount();
+  const currentBook=page.querySelector('[name="current_book"]');
+  if(currentBook)currentBook.onchange=async()=>{
+    try{await api("/api/action",{action:"current_book",book_id:Number(currentBook.value),request_id:crypto.randomUUID()});await refresh();render();}
+    catch(e){flash(e.message);}
+  };
+  const billBook=page.querySelector('#bill-book-select');
+  if(billBook)billBook.onchange=()=>{const q=route().q;q.set("book",billBook.value);location.hash="bills?"+q;};
+  const monthPicker=page.querySelector('#filters [name=month]');
+  if(monthPicker)monthPicker.onchange=()=>{
+    const form=monthPicker.form,month=monthOf(monthPicker.value);
+    form.elements.from.value=month+"-01";
+    form.elements.to.value=localDate(new Date(Number(month.slice(0,4)),Number(month.slice(5,7)),0));
+  };
   } catch(error) {
     page.innerHTML=heading("页面加载失败")+'<div class="panel"><p>'+h(error.message)+'</p><p>请关闭旧的应用窗口，重新运行 start.cmd，并使用新打开的页面。</p></div>';
   }
 }
 function quick() {
   const {parts:[key,id,,day],q}=route();
-  billForm(null,{book:key==="book"?id:q.get("book"),day});
+  billForm(null,{book:key==="book"?id:(q.get("book")||state.current_book),day});
 }
 actions={
+  imageimport:(owner,kind)=>ImageImportUI.start(owner,kind),
+  exportdata:()=>WorkspaceUI.exchange(),budget:(book,month)=>WorkspaceUI.budgetForm(book,month),loanplan:id=>WorkspaceUI.loanForm(id),
   newbook:()=>bookForm(), rename:id=>bookForm(by(state.books,id)), quick, newaccount:owner=>accountForm(owner),
   edit:id=>billForm(by(state.bills,id)),
   addasset:owner=>AssetUI.add(owner),

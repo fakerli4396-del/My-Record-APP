@@ -8,5 +8,9 @@ node --check assets.js
 if errorlevel 1 exit /b %errorlevel%
 node --check inventory.js
 if errorlevel 1 exit /b %errorlevel%
+node --check workspace-ui.js
+if errorlevel 1 exit /b %errorlevel%
+node --check ocr-ui.js
+if errorlevel 1 exit /b %errorlevel%
 node --test
 exit /b %errorlevel%

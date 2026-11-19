@@ -130,6 +130,7 @@ const AssetUI = (() => {
     else if(tab==="overview") body=composition(state.portfolio[owner].current,"assets")+composition(state.portfolio[owner].current,"debts")+
       '<div class="row">'+Object.entries(assetTabs).map(([key,label])=>link(assetURL(owner,key),label)).join("")+'</div>';
     else body='<div class="row">'+btn(tab==="accounts"?"newaccount:"+owner:"newpos:"+owner+":"+tab,"新增"+assetTabs[tab],true)+'</div>'+grouped(owner,tab);
+    if(tab==="borrow"||tab==="lend") body=WorkspaceUI.board(owner,tab,q)+body;
     return heading("资产与借贷",owners[owner]+"资产概览 · 截至 "+today(),btn("addasset:"+owner,"添加资产或账户",true)+(owner==="family"?link("inventory","家庭资产盘点"):""))+
       '<div class="row">'+nav+'</div>'+summary(owner)+'<div class="row asset-tabs">'+tabs+'</div>'+body;
   }
@@ -223,5 +224,5 @@ const AssetUI = (() => {
       '<rect class="peak-bubble" x="'+tipX+'" y="'+(peakY-44)+'" width="140" height="29" rx="8"/><text class="peak-label" x="'+(tipX+70)+'" y="'+(peakY-25)+'">'+money(peak.value)+'</text></svg></div>';
   }
   function mount() {}
-  return {clear,home,view,accountForm,positionForm,add,valueForm,physical,mount};
+  return {ring:allocationRing,clear,home,view,accountForm,positionForm,add,valueForm,physical,mount};
 })();

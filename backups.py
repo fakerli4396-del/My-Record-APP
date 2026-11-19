@@ -12,6 +12,9 @@ from uuid import uuid4
 
 import ledger
 import portfolio
+import recognition_repair
+import image_import
+import planning
 import inventory
 import catalog
 
@@ -69,9 +72,13 @@ def validate(path):
 
 def upgrade_copy(path):
     with closing(sqlite3.connect(path)) as db, db:
+        db.row_factory = sqlite3.Row
         portfolio.upgrade(db)
         catalog.ensure(db)
         inventory.ensure(db)
+        planning.ensure(db)
+        image_import.ensure(db)
+        recognition_repair.apply(db,recognition_repair.plan(db))
 
 
 def stamp(path, key, value):
@@ -162,7 +169,7 @@ root.withdraw()
 root.attributes('-topmost', True)
 try:
     path = filedialog.askdirectory(title='选择备份目录') if sys.argv[1]=='browse_folder' else filedialog.askopenfilename(
-        title='选择账本备份', filetypes=[('账本备份','*.db'),('所有文件','*.*')])
+        title='选择账本备份', filetypes=[('账本数据','*.db *.xlsx *.xls'),('所有文件','*.*')])
     print(json.dumps({'path':path}))
 finally:
     root.destroy()
