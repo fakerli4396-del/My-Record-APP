@@ -75,3 +75,42 @@ class ImprovementsTests(unittest.TestCase):
         self.assertEqual(first["principal"],2780545,result)
         self.assertEqual(first["months"][4:7],[660096,670264,683029],result)
         self.assertEqual(first["annual_rate"],"3",result)
+
+    def test_asset_screenshot_parser_uses_purchase_price_and_holding_days(self):
+        def word(text,x,y):
+            return dict(text=text,x=x,y=y,w=50,h=18)
+        result=image_import.parse_assets([
+            word("我的资产",5,5),word("¥167,515.00",5,40),word("日消耗 ¥105.06",150,40),
+            word("宝来2018款",32,100),word("2728天",220,100),
+            word("¥116,000.00",32,128),word("日均¥42.52/天",160,128),
+            word("iPadPro2024",32,180),word("¥8,800.00",32,208),
+            word("831天",220,208),word("日均¥10.59/天",32,240),
+        ])
+        self.assertEqual([r["name"] for r in result["items"]],["宝来2018款","iPadPro2024"])
+        self.assertEqual([r["purchase_price"] for r in result["items"]],[11600000,880000])
+        self.assertTrue(all(row["purchase_day"] for row in result["items"]))
+
+    def test_asset_image_ocr_preserves_currency_decimals(self):
+        from PIL import Image, ImageDraw, ImageFont
+        image=Image.new("RGB",(1050,440),"#fafaf9")
+        draw=ImageDraw.Draw(image)
+        font=ImageFont.truetype("C:/Windows/Fonts/msyh.ttc",34)
+        for point,label in [((12,10),"我的资产"),((12,60),"¥167,515.00"),((165,146),"宝来2018款"),
+                            ((165,196),"¥116,000.00"),((570,196),"2728 天"),((170,280),"平板"),
+                            ((170,333),"¥8,800.00"),((570,333),"831 天")]:
+            draw.text(point,label,fill="#222222",font=font)
+        file=self.path.parent/"asset-cards.png"
+        image.save(file)
+        result=image_import.recognize({"kind":"asset","content":base64.b64encode(file.read_bytes()).decode()})
+        self.assertEqual([r["purchase_price"] for r in result["items"]],[11600000,880000],result)
+
+    def test_asset_ocr_joins_split_thousands_and_corrects_known_product_name(self):
+        def word(text,x,y,w):
+            return dict(text=text,x=x,y=y,w=w,h=19)
+        words=[word("OLED电视",20,30,100),word("¥5,",20,58,22),word("466",55,58,33),word(".00",89,58,27),
+               word("葆芬吹风机",20,120,120),word("¥485.00",20,150,100)]
+        self.assertEqual([(r["name"],r["purchase_price"]) for r in image_import.parse_assets(words)["items"]],
+                         [("OLED电视",546600),("徕芬吹风机",48500)])
+        chinese=[word("OLED电视",20,30,100),word("¥5.00",20,58,52)]
+        english=[word("5,466.00",28,58,84)]
+        self.assertEqual(image_import.parse_assets(chinese,english)["items"][0]["purchase_price"],546600)

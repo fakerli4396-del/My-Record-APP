@@ -61,8 +61,9 @@ def initialize(path):
         portfolio.upgrade(db)
         catalog.ensure(db)
         inventory.ensure(db)
-        planning.ensure(db)
         image_import.ensure(db)
+        planning.ensure(db)
+        ledger.ensure_asset_fields(db)
 
     with connect(path) as db:
         repairs=recognition_repair.plan(db)
@@ -102,7 +103,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(content)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+        self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
         self.end_headers()
         self.wfile.write(content)
 
@@ -133,7 +134,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(400,{"error":"资产图表参数或数据无效"})
         files = {"/": ("index.html", "text/html"), "/style.css": ("style.css", "text/css"),
                  "/ui.js": ("ui.js", "text/javascript"), "/reports.js": ("reports.js", "text/javascript"),
-                 "/ocr-ui.js": ("ocr-ui.js", "text/javascript"), "/workspace-ui.js": ("workspace-ui.js", "text/javascript"), "/inventory.js": ("inventory.js", "text/javascript"), "/assets.js": ("assets.js", "text/javascript")}
+                 "/date-picker.js": ("date-picker.js", "text/javascript"), "/ocr-ui.js": ("ocr-ui.js", "text/javascript"), "/workspace-ui.js": ("workspace-ui.js", "text/javascript"), "/inventory.js": ("inventory.js", "text/javascript"), "/assets.js": ("assets.js", "text/javascript")}
         if self.path in files:
             name, content_type = files[self.path]
             return self.send_bytes(200, content_type + "; charset=utf-8", (ROOT / name).read_bytes())

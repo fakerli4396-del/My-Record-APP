@@ -1,4 +1,6 @@
-# My Record APP
+# My Record APP 1.0
+
+当前版本为 **My Record APP 1.0**，版本号为 `1.0.0`。
 
 在 Windows 电脑上离线管理家庭和个人的账本、资金账户、资产、借贷及投资。产品范围见 [PRD.md](PRD.md)。
 

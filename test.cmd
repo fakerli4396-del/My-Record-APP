@@ -12,5 +12,7 @@ node --check workspace-ui.js
 if errorlevel 1 exit /b %errorlevel%
 node --check ocr-ui.js
 if errorlevel 1 exit /b %errorlevel%
+node --check date-picker.js
+if errorlevel 1 exit /b %errorlevel%
 node --test
 exit /b %errorlevel%

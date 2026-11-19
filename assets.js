@@ -24,42 +24,67 @@ const AssetUI = (() => {
       box.hidden=!credit;box.querySelectorAll("input").forEach(el=>el.disabled=!credit);};
     form.elements.account_type.onchange=update;update();
   }
-  function add(owner) {
-    const choices=[...Object.entries(state.asset_options.accounts).map(([key,label])=>["account/"+key,label]),
-      ["invest/other","投资持仓 · 股票 / 基金 / 理财"],["borrow/loan","负债 · 贷款 / 应付"],
-      ["lend/receivable","债权 · 应收 / 借出"],["asset/custom","自定义资产 · 房产 / 车辆"]];
-    openForm("添加资产或账户",field("归属",select("owner",Object.entries(owners),owner))+
-      field("类型",select("choice",choices,"account/bank")),d=>{
-        const [kind,type]=d.choice.split("/");
-        setTimeout(()=>kind==="account"?accountForm(d.owner,null,type):positionForm(d.owner,kind,null,type),0);
-      },"下一步");
+  function assetFields(old={}, fromImage=false, optionalPurchase=false) {
+    const required=optionalPurchase?"":" required";
+    return field("首购价格（元）",input("purchase_price",old.purchase_price==null?"":(old.purchase_price/100).toFixed(2),'inputmode="decimal"'+required))+
+      (fromImage?field("初始估值（元）",moneyInput("value",old.purchase_price)):"")+
+      field("购买日期",input("purchase_day",old.purchase_day||"",'type="date" max="'+today()+'"'+required))+
+      field("是否有贷款",select("has_loan",[["0","无贷款"],["1","有贷款"]],old.has_loan?"1":"0"))+
+      field("资产图标",select("asset_icon",iconChoices(),old.asset_icon||"other"));
+  }
+  function assetData(d) {
+    return {purchase_price:d.purchase_price===""?null:parseMoney(d.purchase_price,false,true),purchase_day:d.purchase_day||null,
+      asset_icon:d.asset_icon,has_loan:d.has_loan==="1"};
+  }
+  function holdingCard(p) {
+    const days=p.purchase_day?Math.max(1,Math.round((Date.parse(today())-Date.parse(p.purchase_day))/86400000)+1):null;
+    const price=p.purchase_price==null?"—":money(p.purchase_price);
+    const daily=days&&p.purchase_price!=null?money(Math.round(p.purchase_price/days))+"/天":"—";
+    const loan=p.has_loan==null?"":p.has_loan?" · 有贷款":" · 无贷款";
+    return '<a class="panel holding-card" href="#assets/detail/'+p.id+'">'+categoryIcon({icon:p.asset_icon,icon_image:p.icon_image})+
+      '<div class="holding-name"><strong>'+h(p.name)+'</strong><small>'+h(state.asset_options.positions.asset[p.subtype]+loan)+'</small></div>'+
+      [["首购价格",price],["日均持有成本",daily],["持有天数",days?days+" 天":"—"]].map(([label,value])=>
+        '<div><small>'+label+'</small><strong>'+value+'</strong></div>').join("")+'</a>';
   }
   function positionForm(owner,kind,old,subtype) {
-    const loan=["borrow","lend"].includes(kind), init=loan&&!old;
+    const loan=["borrow","lend"].includes(kind), init=loan&&!old, asset=kind==="asset";
+    const monthlyLabel=kind==="lend"?"每月应收":"每月应还";
+    const ownership=field("归属",select("owner",Object.entries(owners),old?.owner||owner));
     const form=openForm((old?"编辑":"新增")+assetTabs[kind],
       field("名称",input("name",old?.name,"required maxlength=80"))+
-      field("归属",select("owner",Object.entries(owners),owner))+
+      (!asset?ownership:"")+
       field("资产分类",select("subtype",Object.entries(state.asset_options.positions[kind]),old?.subtype||subtype))+
       field("机构 / 对方",input("institution",old?.institution,"maxlength=120"))+
-      (kind==="asset"&&!old?field("初始估值（元）",moneyInput("value"))+field("估值日期",input("day",today(),'type="date" required')):"")+
+      (asset?(!old?field("初始估值（元）",moneyInput("value")):"")+assetFields(old||{purchase_day:today()},false,Boolean(old&&!old.purchase_day))+iconUpload(old):"")+
       (kind==="invest"&&!old?field("已有持仓成本（元，无持仓填 0）",moneyInput("initial_cost",0))+
         field("已有持仓市值（元，无持仓填 0）",moneyInput("initial_market",0))+
         field("持仓登记日期",input("day",today(),'type="date" required'))+'<small>已有持仓只登记资产，不扣减资金账户；之后的新投入在详情中记录。</small>':"")+
       (loan?field("到期日",input("due",old?.due,'type="date"')):"")+
-      (init?field("登记方式",select("opening_only",[["1","已有债务 / 应收，仅登记余额"],["0","本次新借入 / 借出，同步资金"]],"1"))+
-        field("初始本金（元）",moneyInput("principal"))+field("业务日期",input("day",today(),'type="date" required'))+
-        '<div id="loan-funding">'+fundingFields()+'</div>':"")+
-      field("备注",input("note",old?.note,"maxlength=500")),async(d,send)=>{
+      (init?field(kind==="lend"?"借出本金（元）":"借入本金（元）",moneyInput("principal"))+
+        field("总利息（元）",moneyInput("total_interest",0))+
+        field("还款期数（月）",input("term_months",12,'type="number" min="1" max="600" required'))+
+        field(kind==="lend"?"借出日期":"借入日期",input("day",today(),'type="date" required'))+
+        field(kind==="lend"?"首期收回月份":"首期还款月份",input("first_month",thisMonth(),'type="month" required'))+
+        field(monthlyLabel+"（元，留空自动分配）",input("monthly_payment","",'inputmode="decimal"'))+
+        '<p id="loan-estimate" class="muted" aria-live="polite"></p>'+
+        '<small>平息年化 = 总利息 ÷ 本金 × 12 ÷ 期数。自动分配时各期相差最多一分，手填月供时由末期结清余款。</small>':"")+
+      field("备注",input("note",old?.note,"maxlength=500"))+(asset?ownership:""),async(d,send)=>{
         const result=await send({...d,action:"position",kind,...(old?{id:old.id}:{}),
-          ...(kind==="asset"&&!old?{value:parseMoney(d.value,false,true)}:{}),
+          ...(asset?{...assetData(d),...await iconData(d)}:{}),
+          ...(asset&&!old?{value:parseMoney(d.value,false,true),day:today()}:{}),
           ...(kind==="invest"&&!old?{initial_cost:parseMoney(d.initial_cost,false,true),initial_market:parseMoney(d.initial_market,false,true)}:{}),
-          ...(init?{opening_only:d.opening_only==="1",principal:parseMoney(d.principal),book_id:Number(d.book_id),account_id:Number(d.account_id)}:{})});
+          ...(init?{opening_only:true,principal:parseMoney(d.principal),total_interest:parseMoney(d.total_interest,false,true),
+            term_months:Number(d.term_months),monthly_payment:d.monthly_payment?parseMoney(d.monthly_payment):null}:{})});
         await refresh();location.hash="assets/detail/"+result.id;render();
       });
-    if(init) {
-      const update=()=>{const box=form.querySelector("#loan-funding"), only=form.elements.opening_only.value==="1";
-        box.hidden=only;box.querySelectorAll("select").forEach(el=>el.disabled=only);};
-      form.elements.opening_only.onchange=update;update();
+    if(init){
+      const estimate=()=>{
+        const fields=form.elements,principal=Number(fields.principal.value),interest=Number(fields.total_interest.value),terms=Number(fields.term_months.value);
+        form.querySelector("#loan-estimate").textContent=principal>0&&interest>=0&&terms>0?
+          "预计"+monthlyLabel+" "+(fields.monthly_payment.value?money(Math.round(Number(fields.monthly_payment.value)*100)):money(Math.ceil(Math.round((principal+interest)*100)/terms)))+
+          " · 平息年化 "+(interest/principal*1200/terms).toFixed(4)+"%":"填写本金、利息和期数后显示预计月供及利率";
+      };
+      form.addEventListener("input",estimate);estimate();
     }
   }
   function valueForm(p,old) {
@@ -69,7 +94,7 @@ const AssetUI = (() => {
   }
   function physical(p) {
     const values=state.asset_values.filter(v=>v.position_id===p.id);
-    return '<div class="panel">'+metrics({value:p.value},{value:"最近登记估值"})+'</div><div class="row">'+btn("value:"+p.id,"更新估值",true)+'</div>'+
+    return holdingCard(p)+'<div class="panel">'+metrics({value:p.value},{value:"最近登记估值"})+'</div><div class="row">'+btn("value:"+p.id,"更新估值",true)+'</div>'+
       '<div class="panel"><h2>估值历史</h2>'+(values.length?'<table class="table"><thead><tr><th>日期</th><th>估值</th><th>备注</th><th>操作</th></tr></thead><tbody>'+values.map(v=>
         '<tr><td>'+h(v.day)+'</td><td>'+money(v.value)+'</td><td>'+h(v.note)+'</td><td>'+btn("valueedit:"+p.id+":"+v.id,"编辑")+btn("valuedel:"+v.id,"删除")+'</td></tr>').join("")+'</tbody></table>':'<p>暂无估值记录</p>')+'</div>';
   }
@@ -90,7 +115,7 @@ const AssetUI = (() => {
   function home() {return '<div class="grid home-wealth">'+summary("family",true)+summary("personal",true)+'</div>';}
   function accountView(a) {
     const debt=Math.max(0,-a.balance), available=Math.max(0,a.credit_limit+a.balance);
-    return heading(a.name,owners[a.owner]+" · "+state.asset_options.accounts[a.account_type],link(assetURL(a.owner,"accounts"),"返回资金账户")+btn("accountedit:"+a.id,"配置账户"))+
+    return heading(a.name,owners[a.owner]+" · "+state.asset_options.accounts[a.account_type],link(detailReturn(assetURL(a.owner,"accounts")),"返回资金账户")+btn("accountedit:"+a.id,"配置账户"))+
       '<div class="panel">'+metrics({opening:a.opening,balance:a.balance},{opening:"期初余额",balance:"当前余额"})+
       '<p>期初日期 '+h(a.opening_day)+' · '+h(a.institution||"未填写机构")+'</p><p>'+h(a.note)+'</p>'+
       (a.account_type==="credit"?metrics({debt,limit:a.credit_limit,available},{debt:"当前欠款",limit:"信用额度",available:"可用额度"})+
@@ -101,7 +126,8 @@ const AssetUI = (() => {
   }
   function grouped(owner,tab) {
     const items=tab==="accounts"?state.accounts.filter(a=>a.owner===owner):state.positions.filter(p=>p.owner===owner&&p.kind===tab);
-    if(!items.length) return empty("暂无"+assetTabs[tab]+"记录",btn("addasset:"+owner,"添加资产或账户",true)+(owner==="family"?link("inventory","家庭资产盘点"):""));
+    if(!items.length) return empty("暂无"+assetTabs[tab]+"记录");
+    if(tab==="asset")return '<section class="holding-list" aria-label="持有资产">'+items.map(holdingCard).join("")+'</section>';
     const groups=new Map();
     for(const item of items) {
       const group=tab==="accounts"?state.asset_options.accounts[item.account_type]:state.asset_options.positions[tab][item.subtype];
@@ -119,6 +145,7 @@ const AssetUI = (() => {
   function view(q,sub,id) {
     if(sub==="account" && by(state.accounts,id)) return accountView(by(state.accounts,id));
     if(sub==="position") {const p=state.positions.find(p=>p.events.some(e=>e.id===Number(id)));if(p)return viewPosition(p);}
+    if(sub==="forecast" && by(state.forecast_items,id)) return WorkspaceUI.forecastDetail(by(state.forecast_items,id));
     if(sub==="detail" && by(state.positions,id)) return viewPosition(by(state.positions,id));
     const owner=q.get("owner")==="personal"?"personal":"family";
     const valid={overview:"资产概览",...assetTabs,charts:"图表分析"};
@@ -129,12 +156,12 @@ const AssetUI = (() => {
     if(tab==="charts") body=chartView(owner,q);
     else if(tab==="overview") body=composition(state.portfolio[owner].current,"assets")+composition(state.portfolio[owner].current,"debts")+
       '<div class="row">'+Object.entries(assetTabs).map(([key,label])=>link(assetURL(owner,key),label)).join("")+'</div>';
-    else body='<div class="row">'+btn(tab==="accounts"?"newaccount:"+owner:"newpos:"+owner+":"+tab,"新增"+assetTabs[tab],true)+'</div>'+grouped(owner,tab);
+    else body='<div class="row">'+btn(tab==="accounts"?"newaccount:"+owner:"newpos:"+owner+":"+tab,"新增"+assetTabs[tab],true)+(tab==="asset"?btn("assetimage:"+owner,"图片识别导入"):"")+'</div>'+grouped(owner,tab);
     if(tab==="borrow"||tab==="lend") body=WorkspaceUI.board(owner,tab,q)+body;
-    return heading("资产与借贷",owners[owner]+"资产概览 · 截至 "+today(),btn("addasset:"+owner,"添加资产或账户",true)+(owner==="family"?link("inventory","家庭资产盘点"):""))+
+    return heading("资产与借贷",owners[owner]+"资产概览 · 截至 "+today(),(tab==="asset"||tab==="accounts"?"":btn("newpos:"+owner+":asset","新增资产",true)+btn("newaccount:"+owner,"添加账户"))+(owner==="family"?link("inventory","家庭资产盘点"):""))+
       '<div class="row">'+nav+'</div>'+summary(owner)+'<div class="row asset-tabs">'+tabs+'</div>'+body;
   }
-  function allocationRing(ranked,total,label) {
+  function allocationRing(ranked,total,label,urls=[]) {
     const cx=210, cy=118, radius=74, labels=[];
     let offset=0;
     const slices=ranked.map(([group,value],i)=>{
@@ -145,7 +172,7 @@ const AssetUI = (() => {
       const gap=ranked.length===1?0:Math.min(.55,percent*.18);
       const arc='<circle class="slice tone-'+i%8+'" cx="'+cx+'" cy="'+cy+'" r="'+radius+'" pathLength="100" stroke-dasharray="'+(percent-gap)+' '+(100-percent+gap)+'" stroke-dashoffset="'+(-offset)+'" transform="rotate(-90 '+cx+' '+cy+')"/>';
       offset+=percent;
-      return arc;
+      return '<a class="ring-segment" tabindex="0" aria-label="'+h(group+' '+money(value))+'"'+(urls[i]?' href="#'+h(urls[i])+'"':'')+'>'+arc+'<title>'+h(group+' '+money(value))+'</title></a>';
     });
     const notes=[];
     for(const right of [false,true]) {
@@ -168,9 +195,9 @@ const AssetUI = (() => {
     const ranked=[...groups].sort((a,b)=>b[1]-a[1]);
     const total=current[metric];
     return '<section class="panel composition"><h2>当前'+chartNames[metric]+'配置</h2>'+(!total?'<p class="muted">暂无'+chartNames[metric]+'数据</p>':
-      '<div class="allocation">'+allocationRing(ranked,total,chartNames[metric])+'<div class="allocation-legend">'+ranked.map(([group,value],i)=>
+      '<div class="allocation">'+allocationRing(ranked,total,chartNames[metric],ranked.map(([group])=>"assets?"+new URLSearchParams({owner:route().q.get("owner")||"family",group,metric,return:location.hash.slice(1)})))+'<div class="allocation-legend">'+ranked.map(([group,value],i)=>
         '<div class="legend-row"><span class="swatch tone-'+i%8+'"></span><span>'+h(group)+'</span><strong>'+money(value)+'</strong><span>'+ratio(value/total)+'</span></div>').join("")+'</div></div>')+
-      '<h3>'+chartNames[metric]+'排行榜</h3>'+(entries.length?'<ol class="asset-ranking">'+entries.map(e=>'<li><a href="#assets/'+(e.kind==="account"?"account":"detail")+'/'+e.id+'">'+h(e.name)+'</a><strong>'+money(e[metric])+'</strong></li>').join("")+'</ol>':'<p class="muted">暂无记录</p>')+'</section>';
+      '<h3>'+chartNames[metric]+'排行榜</h3>'+(entries.length?'<ol class="asset-ranking">'+entries.map(e=>'<li><a href="#assets/'+(e.kind==="account"?"account":"detail")+'/'+e.id+'?return='+encodeURIComponent(location.hash.slice(1))+'">'+h(e.name)+'</a><strong>'+money(e[metric])+'</strong></li>').join("")+'</ol>':'<p class="muted">暂无记录</p>')+'</section>';
   }
   function chartView(owner,q) {
     const year=/^[0-9]{4}$/.test(q.get("year")||"")&&Number(q.get("year"))>0?Number(q.get("year")):new Date().getFullYear();
@@ -224,5 +251,5 @@ const AssetUI = (() => {
       '<rect class="peak-bubble" x="'+tipX+'" y="'+(peakY-44)+'" width="140" height="29" rx="8"/><text class="peak-label" x="'+(tipX+70)+'" y="'+(peakY-25)+'">'+money(peak.value)+'</text></svg></div>';
   }
   function mount() {}
-  return {ring:allocationRing,clear,home,view,accountForm,positionForm,add,valueForm,physical,mount};
+  return {ring:allocationRing,clear,home,view,accountForm,positionForm,assetFields,assetData,valueForm,physical,mount};
 })();

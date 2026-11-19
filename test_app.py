@@ -68,7 +68,7 @@ class LocalAppTests(unittest.TestCase):
         self.post("book", id=book, name="家庭支出")
         self.post("archive", id=book, archived=True)
         state = self.state()
-        self.assertEqual(state["books"][0], {"id":book,"name":"家庭支出","archived":1})
+        self.assertEqual(state["books"][0], {"id":book,"name":"家庭支出","archived":1,"icon_image":""})
         self.assertEqual(state["bills"][0]["id"], bill)
         with self.assertRaises(HTTPError):
             self.post("bill", **self.spending(book, account))

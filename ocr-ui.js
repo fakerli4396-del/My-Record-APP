@@ -2,10 +2,8 @@
 const ImageImportUI=(()=>{
   const fileData=file=>new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(",")[1]);reader.onerror=()=>reject(new Error("无法读取文件"));reader.readAsDataURL(file);});
   function start(owner,kind){
-    const books=state.books.filter(b=>!b.archived);
-    if(!books.length){bookForm();return;}
-    const form=openForm("图片识别导入",field("所属账本",select("book_id",books.map(b=>[b.id,b.name]),state.current_book))+
-      field("归属",select("owner",Object.entries(owners),owner))+field("看板",select("kind",[["borrow","负债 / 应还"],["lend","借款 / 应收"]],kind))+
+    const form=openForm("图片识别导入",
+      field("归属",select("owner",Object.entries(owners),owner))+input("kind",kind,'type="hidden"')+
       field("表格年份",input("year",new Date().getFullYear(),'type="number" min="1" max="9999" required'))+
       field("本金登记日期",input("day",today(),'type="date" required'))+
       field("上传表格图片",'<input id="ocr-file" type="file" accept="image/png,image/jpeg,image/webp" required>')+
@@ -41,8 +39,8 @@ const ImageImportUI=(()=>{
           return {name:value("name"),mode:value("mode"),annual_rate:value("annual_rate"),months,
             principal:value("mode")==="loan"?parseMoney(value("principal")):null};
         });
-        await send({action:"image_import",book_id:Number(context.book_id),owner:context.owner,kind:context.kind,year:Number(context.year),day:context.day,items});
-        await refresh();location.hash=assetURL(context.owner,context.kind)+"&book="+context.book_id+"&year="+context.year;render();
+        await send({action:"image_import",book_id:context.book_id?Number(context.book_id):null,owner:context.owner,kind:context.kind,year:Number(context.year),day:context.day,items});
+        await refresh();location.hash=assetURL(context.owner,context.kind)+(context.book_id?"&book="+context.book_id:"")+"&year="+context.year;render();
       },"确认导入");
     const wire=()=>{
       form.querySelectorAll('[data-remove-ocr]').forEach(b=>b.onclick=()=>b.closest('fieldset').remove());
@@ -65,5 +63,34 @@ const ImageImportUI=(()=>{
     };
     wire();
   }
-  return {start};
+  function startAsset(owner){
+    openForm("资产图片识别导入",field("归属",select("owner",Object.entries(owners),owner))+
+      field("持有资产截图",'<input name="image" type="file" accept="image/png,image/jpeg,image/webp" required>'),
+      async d=>{
+        const file=d.image;
+        if(!file?.size||file.size>10*1024*1024)throw new Error("请选择10MB以内的图片");
+        const result=await api("/api/files",{action:"recognize_image",kind:"asset",content:await fileData(file)});
+        if(!result.items.length)throw new Error("没有识别到带价格的资产，请上传名称和价格清晰的截图");
+        setTimeout(()=>reviewAssets(d.owner,result),0);
+      },"开始识别");
+  }
+  function reviewAssets(owner,result){
+    const classes=Object.entries(state.asset_options.positions.asset);
+    const form=openForm("核对识别出的资产",'<p>'+h(result.warnings.join(" "))+'</p><div id="recognized-rows">'+
+      result.items.map((item,index)=>'<fieldset data-asset-review><legend>资产 '+(index+1)+'</legend>'+
+        field("资产名称",input("name",item.name,'required maxlength="80"'))+
+        field("资产分类",select("subtype",classes,"custom"))+AssetUI.assetFields(item,true)+
+        '<button type="button" data-remove-asset>移除此项</button></fieldset>').join("")+'</div>',
+      async(_,send)=>{
+        const items=Array.from(form.querySelectorAll("[data-asset-review]"),row=>{
+          const values=Object.fromEntries(Array.from(row.querySelectorAll("input,select"),control=>[control.name,control.value]));
+          return {...AssetUI.assetData(values),name:values.name,subtype:values.subtype,value:parseMoney(values.value,false,true)};
+        });
+        if(!items.length)throw new Error("请至少确认一项资产");
+        await send({action:"asset_image_import",owner,items});
+        await refresh();location.hash=assetURL(owner,"asset");render();
+      },"确认导入");
+    form.querySelectorAll("[data-remove-asset]").forEach(button=>button.onclick=()=>button.closest("fieldset").remove());
+  }
+  return {start,startAsset};
 })();

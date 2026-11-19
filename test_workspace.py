@@ -74,3 +74,97 @@ class WorkspaceTests(unittest.TestCase):
             exchange.workbook_db(Path(result["path"]),candidate)
             with app.connect(candidate) as db:
                 self.assertEqual([r[0] for r in db.execute("SELECT owner FROM positions")],[owner])
+
+    def test_unassigned_borrow_schedule_paid_status_and_delete(self):
+        key=self.post("position",kind="borrow",owner="family",name="京东金条",day="2026-11-19",
+                      opening_only=True,principal=100000,total_interest=10001,
+                      term_months=4,first_month="2026-12",monthly_payment=27500)["id"]
+        current=self.state()
+        self.assertEqual(current["loan_plans"],[{"position_id":key,"book_id":None,"annual_rate":"30.003"}])
+        self.assertEqual([(r["month"],r["amount"]) for r in current["installments"]],
+                         [("2026-12",27500),("2027-01",27500),("2027-02",27500),("2027-03",27501)])
+        self.post("installment_paid",id=key,month="2027-01",paid=True)
+        self.post("loan_plan",position_id=key,year=2027,annual_rate="30.003",months=[27500,27500,27501]+[0]*9)
+        self.assertEqual(next(r["paid"] for r in self.state()["installments"] if r["month"]=="2027-01"),1)
+        self.assertEqual(self.state()["positions"][0]["cost"],100000)
+        self.assertEqual(self.state()["bills"],[])
+        self.post("delete_borrow",id=key)
+        self.assertEqual(self.state()["positions"],[])
+        self.assertEqual(self.state()["installments"],[])
+        self.assertEqual(self.state()["loan_plans"],[])
+
+    def test_asset_card_data_and_book_icon_survive_export_import(self):
+        book=self.post("book",name="我的账本",icon="car")["id"]
+        items=[dict(name="家庭房产",subtype="property",value=204000,purchase_price=200000,
+                    purchase_day="2025-03-02",asset_icon="home",has_loan=True)]
+        result=self.post("asset_image_import",owner="family",items=items)
+        self.assertEqual(self.post("asset_image_import",owner="family",items=items),result)
+        bad=[dict(items[0],name="另一套房"),dict(items[0],name="错误日期",purchase_day="9999-01-01")]
+        with self.assertRaises(HTTPError): self.post("asset_image_import",owner="family",items=bad)
+        state=self.state()
+        self.assertEqual(len(state["positions"]),1)
+        self.assertEqual(state["book_icons"],{str(book):"car"})
+        asset=state["positions"][0]
+        self.assertEqual((asset["purchase_price"],asset["purchase_day"],asset["asset_icon"],asset["has_loan"],asset["value"]),
+                         (200000,"2025-03-02","home",1,204000))
+        result=self.post("export_data",endpoint="files",format="xlsx",book="",owner="all",path=str(self.path.parent))
+        preview=self.post("import_preview",endpoint="files",path=result["path"])
+        self.post("import_restore",endpoint="files",path=result["path"],fingerprint=preview["fingerprint"])
+        self.assertEqual(self.state()["positions"],state["positions"])
+        self.assertEqual(self.state()["book_icons"],state["book_icons"])
+
+    def test_lend_schedule_and_imported_forecast_are_independent_of_books(self):
+        key=self.post("position",kind="lend",owner="personal",name="借给朋友",day="2026-11-19",
+                      opening_only=True,principal=200000,total_interest=20000,
+                      term_months=4,first_month="2026-12")["id"]
+        state=self.state()
+        self.assertEqual(state["books"],[])
+        self.assertEqual(state["loan_plans"],[{"position_id":key,"book_id":None,"annual_rate":"30"}])
+        self.assertEqual([r["amount"] for r in state["installments"]],[55000]*4)
+        self.post("installment_paid",id=key,month="2027-01",paid=True)
+        self.assertEqual(next(r["paid"] for r in self.state()["installments"] if r["month"]=="2027-01"),1)
+        self.assertEqual(self.state()["positions"][0]["cost"],200000)
+        self.post("image_import",owner="personal",kind="lend",year=2026,day="2026-11-19",
+                  items=[dict(name="我的工",mode="plan",months=[10000]+[0]*11,annual_rate="")])
+        forecast=self.state()["forecast_items"][0]
+        self.assertIsNone(forecast["book_id"])
+        self.post("installment_paid",id=forecast["id"],month="2026-01",forecast=True,paid=True)
+        self.assertEqual(json.loads(self.state()["forecast_items"][0]["paid_months"]),["2026-01"])
+        self.post("delete_lend_forecast",id=forecast["id"])
+        self.post("delete_lend",id=key)
+        self.assertEqual(self.state()["positions"],[])
+        self.assertEqual(self.state()["forecast_items"],[])
+        self.assertEqual(self.state()["installments"],[])
+
+    def test_custom_icon_thumbnail_round_trip_and_remove(self):
+        from PIL import Image
+        from io import BytesIO
+        import base64
+        source=BytesIO()
+        Image.new("RGBA",(250,100),(180,35,165,128)).save(source,format="PNG")
+        upload=base64.b64encode(source.getvalue()).decode()
+        asset=self.post("position",kind="asset",owner="family",name="自定义图标资产",value=1000,
+                        purchase_price=1000,purchase_day="2025-01-01",asset_icon="home",has_loan=False,
+                        icon_image=upload)["id"]
+        category=self.post("category",name="自定义图标类目",kind="expense",icon="home",icon_image=upload)["id"]
+        book=self.post("book",name="图片账本",icon="home",icon_image=upload)["id"]
+        state=self.state()
+        icon=state["positions"][0]["icon_image"]
+        self.assertEqual(next(b for b in state["books"] if b["id"]==book)["icon_image"],icon)
+        self.assertEqual(next(c for c in state["categories"] if c["id"]==category)["icon_image"],icon)
+        with Image.open(BytesIO(base64.b64decode(icon))) as thumbnail:
+            self.assertEqual(thumbnail.format,"PNG")
+            self.assertEqual(thumbnail.size,(64,26))
+        with self.assertRaises(HTTPError):
+            self.post("category",id=category,name="无效图标",kind="expense",icon="home",icon_image="aW52YWxpZA==")
+        result=self.post("export_data",endpoint="files",format="xls",book="",owner="all",path=str(self.path.parent))
+        preview=self.post("import_preview",endpoint="files",path=result["path"])
+        self.post("import_restore",endpoint="files",path=result["path"],fingerprint=preview["fingerprint"])
+        self.assertEqual(self.state()["positions"][0]["icon_image"],icon)
+        self.assertEqual(next(b for b in self.state()["books"] if b["id"]==book)["icon_image"],icon)
+        self.assertEqual(next(c for c in self.state()["categories"] if c["id"]==category)["icon_image"],icon)
+        self.post("position",id=asset,name="自定义图标资产",owner="family",purchase_price=1000,purchase_day="2025-01-01",
+                  asset_icon="home",has_loan=False,icon_image="")
+        self.post("category",id=category,name="自定义图标类目",kind="expense",icon="home",icon_image="")
+        self.assertEqual(self.state()["positions"][0]["icon_image"],"")
+        self.assertEqual(next(c for c in self.state()["categories"] if c["id"]==category)["icon_image"],"")

@@ -10,7 +10,7 @@ def plan(db):
         if len(events)!=1 or events[0][0]!="origin" or not events[0][-1]:
             return None
         config=db.execute("SELECT book_id,annual_rate FROM loan_plans WHERE position_id=?",(p["id"],)).fetchone()
-        months=[tuple(r) for r in db.execute("SELECT month,amount FROM installments WHERE position_id=? ORDER BY month",(p["id"],))]
+        months=[tuple(r) for r in db.execute("SELECT month,amount,paid FROM installments WHERE position_id=? ORDER BY month",(p["id"],))]
         return (p["kind"],p["owner"],p["due"],p["note"],tuple(events),tuple(config) if config else None,tuple(months))
     signatures={p["id"]:signature(p) for p in rows}
     removed=[]

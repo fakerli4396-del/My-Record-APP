@@ -1,4 +1,4 @@
-﻿
+
 param([string]$ImagePath)
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new()
@@ -36,7 +36,7 @@ try {
         $englishResult = Await ($englishEngine.RecognizeAsync($bitmap)) ([Windows.Media.Ocr.OcrResult])
         foreach ($line in $englishResult.Lines) {
             foreach ($word in $line.Words) {
-                if ($word.Text -match '^[0-9.,%]+$') {
+                if ($word.Text -match '^[\u00A5\uFFE5]?[0-9.,%]+$') {
                     $box = $word.BoundingRect
                     $numeric += @{text=$word.Text;x=$box.X;y=$box.Y;w=$box.Width;h=$box.Height}
                 }

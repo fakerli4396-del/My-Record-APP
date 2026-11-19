@@ -76,8 +76,9 @@ def upgrade_copy(path):
         portfolio.upgrade(db)
         catalog.ensure(db)
         inventory.ensure(db)
-        planning.ensure(db)
         image_import.ensure(db)
+        planning.ensure(db)
+        ledger.ensure_asset_fields(db)
         recognition_repair.apply(db,recognition_repair.plan(db))
 
 

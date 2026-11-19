@@ -43,7 +43,7 @@ def subset(source,target,book,owner):
         books|={r["book_id"] for r in bills}|{r["book_id"] for r in events if r["book_id"]}
         plans=[r for r in db.execute("SELECT * FROM loan_plans") if r["position_id"] in positions]
         for record in db.execute("SELECT * FROM forecast_items").fetchall():
-            if (book and record["book_id"]!=int(book)) or (owner!="all" and record["owner"]!=owner):
+            if (book and record["book_id"] is not None and record["book_id"]!=int(book)) or (owner!="all" and record["owner"]!=owner):
                 db.execute("DELETE FROM forecast_items WHERE id=?",(record["id"],))
         books|={r["book_id"] for r in db.execute("SELECT * FROM forecast_items")}
         books|={r["book_id"] for r in plans}
@@ -154,8 +154,9 @@ def workbook_db(source,target):
                             if v in (None,""): v=None
                             elif isinstance(v,bool) or not isinstance(v,(int,float)) or int(v)!=v: raise ValueError("整数金额或编号无效："+label)
                             else: v=int(v)
-                        values.append(v if v!="" or c not in ("due","source_type","source_id") else None)
+                        values.append(v if v!="" or c not in ("due","purchase_day","source_type","source_id") else None)
                     db.execute("INSERT INTO "+table+"("+",".join(columns)+") VALUES ("+",".join("?" for _ in columns)+")",values)
+        backups.upgrade_copy(target)
         backups.validate(target)
     except ImportError as e: raise ValueError("请安装 requirements.txt 中的表格依赖") from e
     except (sqlite3.Error,KeyError,TypeError) as e: raise ValueError("表格数据或关联无效") from e

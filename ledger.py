@@ -1,6 +1,7 @@
 """SQLite tables and the shared rules for cash movement and reporting."""
 from datetime import date
 import re
+import json
 import portfolio
 import catalog
 import image_import
@@ -135,6 +136,57 @@ def rows(db, query, params=()):
     return [dict(row) for row in db.execute(query, params)]
 
 
+def ensure_asset_fields(db):
+    if not any(r[1]=="icon_image" for r in db.execute("PRAGMA table_info(categories)")):
+        db.execute("ALTER TABLE categories ADD COLUMN icon_image TEXT NOT NULL DEFAULT ''")
+    if not any(r[1]=="icon_image" for r in db.execute("PRAGMA table_info(books)")):
+        db.execute("ALTER TABLE books ADD COLUMN icon_image TEXT NOT NULL DEFAULT ''")
+    columns={r[1] for r in db.execute("PRAGMA table_info(positions)")}
+    for column,definition in (
+        ("purchase_price","INTEGER"), ("purchase_day","TEXT"),
+        ("asset_icon","TEXT NOT NULL DEFAULT 'other'"), ("has_loan","INTEGER"),
+        ("icon_image","TEXT NOT NULL DEFAULT ''"),
+    ):
+        if column not in columns:
+            db.execute(f"ALTER TABLE positions ADD COLUMN {column} {definition}")
+
+
+def save_asset_fields(db,key,data):
+    purchase=data.get("purchase_day")
+    price=data.get("purchase_price")
+    if (purchase is None)!=(price is None):
+        raise ValueError("请同时填写购买日期和首购价格")
+    if purchase is not None:
+        purchase=day(purchase)
+        price=cents(price,0)
+    if purchase is not None and purchase>date.today().isoformat():
+        raise ValueError("购买日期不能晚于今天")
+    icon=one_of(data.get("asset_icon"),catalog.ICONS)
+    loan=data.get("has_loan")
+    if type(loan) is not bool:
+        raise ValueError("请选择是否有贷款")
+    db.execute("UPDATE positions SET purchase_price=?,purchase_day=?,asset_icon=?,has_loan=? WHERE id=?",
+               (price,purchase,icon,loan,key))
+    save_icon_image(db,"positions",key,data)
+
+
+def delete_loan(db,key,kind):
+    position=find(db,"positions",key)
+    if position["kind"]!=kind:
+        raise ValueError("请选择对应的借贷项目")
+    db.execute("""DELETE FROM bills WHERE source_type='position'
+                  AND source_id IN (SELECT id FROM finance_events WHERE position_id=?)""",(key,))
+    for table in ("installments","loan_plans","finance_events"):
+        db.execute("DELETE FROM "+table+" WHERE position_id=?",(key,))
+    for record in db.execute("SELECT id,records FROM inventories").fetchall():
+        items=json.loads(record["records"])
+        remaining=[item for item in items if not (item["kind"]=="position" and item["id"]==key)]
+        if len(remaining)!=len(items):
+            db.execute("UPDATE inventories SET records=? WHERE id=?",(json.dumps(remaining),record["id"]))
+    db.execute("DELETE FROM positions WHERE id=?",(key,))
+    return key
+
+
 def write_position(db, data):
     key = data.get("id")
     old = find(db, "positions", key) if key is not None else None
@@ -165,6 +217,10 @@ def write_position(db, data):
     portfolio.configure_position(db,key,data)
     if kind == "asset" and (old is None or "value" in data):
         portfolio.save_value(db,dict(position_id=key,day=data.get("day",date.today().isoformat()),value=value,note=data.get("note","")))
+    if kind=="asset" and "purchase_day" in data:
+        save_asset_fields(db,key,data)
+    if kind in ("borrow","lend") and not old and "term_months" in data:
+        planning.create_loan_schedule(db,key,data)
     return key
 
 
@@ -283,6 +339,7 @@ def snapshot(db):
         "forecast_items":planning.rows(db,"forecast_items"),
         "current_book":(db.execute("SELECT value FROM settings WHERE key='current_book'").fetchone() or [None])[0],
         "category_icons":catalog.ICONS,
+        "book_icons":{r[0][10:]:r[1] for r in db.execute("SELECT key,value FROM settings WHERE key GLOB 'book_icon_*'")},
         "last_backup": (db.execute("SELECT value FROM settings WHERE key='last_backup'").fetchone() or [None])[0],
         "asset_values": rows(db,"SELECT * FROM asset_values ORDER BY day DESC,id DESC"),
         "portfolio": {owner:portfolio.report(db,owner,date.today().year) for owner in ("family","personal")},
@@ -301,6 +358,17 @@ def snapshot(db):
     }
 
 
+def save_icon_image(db,table,key,data):
+    if "icon_image" not in data:
+        return
+    source=data["icon_image"]
+    if source=="":
+        thumbnail=""
+    else:
+        thumbnail=image_import.icon_thumbnail(source)
+    db.execute("UPDATE "+table+" SET icon_image=? WHERE id=?",(thumbnail,key))
+
+
 def save_category(db, data):
     key = data.get("id")
     label = name(data.get("name"))
@@ -309,6 +377,7 @@ def save_category(db, data):
     if key is not None:
         find(db, "categories", key)
         db.execute("UPDATE categories SET name=?,icon=? WHERE id=?", (label,icon,key))
+        save_icon_image(db,"categories",key,data)
         return key
     kind = one_of(data.get("kind"), ("income", "expense"))
     parent_id = data.get("parent_id")
@@ -316,7 +385,9 @@ def save_category(db, data):
         parent = find(db, "categories", parent_id)
         if parent["kind"] != kind or parent["parent_id"] or not parent["enabled"]:
             raise ValueError("请选择启用中的同类型一级类目")
-    return db.execute("INSERT INTO categories(name,kind,parent_id,icon) VALUES (?,?,?,?)", (label,kind,parent_id,icon)).lastrowid
+    key=db.execute("INSERT INTO categories(name,kind,parent_id,icon) VALUES (?,?,?,?)", (label,kind,parent_id,icon)).lastrowid
+    save_icon_image(db,"categories",key,data)
+    return key
 
 
 def mutate(db, data):
@@ -331,8 +402,7 @@ def mutate(db, data):
         if type(data.get("year"))!=int or not 1<=data["year"]<=9999: raise ValueError("年份无效")
         values=data.get("months")
         if not isinstance(values,list) or len(values)!=12: raise ValueError("请填写12个月计划")
-        import json
-        db.execute("UPDATE forecast_items SET year=?,months=? WHERE id=?",(data["year"],json.dumps([cents(v,0) for v in values]),key))
+        db.execute("UPDATE forecast_items SET paid_months=CASE WHEN year=? THEN paid_months ELSE '[]' END,year=?,months=? WHERE id=?",(data["year"],data["year"],json.dumps([cents(v,0) for v in values]),key))
         return key
     if operation == "image_import":
         return image_import.apply(db,data)
@@ -342,11 +412,50 @@ def mutate(db, data):
         db.execute("INSERT OR REPLACE INTO settings VALUES ('current_book',?)",(str(book["id"]),))
         return book["id"]
     if operation == "book":
+        label=name(data.get("name"))
         if key is None:
-            return db.execute("INSERT INTO books(name) VALUES (?)", (name(data.get("name")),)).lastrowid
-        find(db, "books", key)
-        db.execute("UPDATE books SET name=? WHERE id=?", (name(data.get("name")), key))
+            key=db.execute("INSERT INTO books(name) VALUES (?)",(label,)).lastrowid
+        else:
+            find(db,"books",key)
+            db.execute("UPDATE books SET name=? WHERE id=?",(label,key))
+        if "icon" in data:
+            db.execute("INSERT OR REPLACE INTO settings VALUES (?,?)",
+                       ("book_icon_"+str(key),one_of(data["icon"],{"default",*catalog.ICONS})))
+        save_icon_image(db,"books",key,data)
         return key
+    if operation in ("delete_borrow","delete_lend"):
+        return delete_loan(db,key,operation.removeprefix("delete_"))
+    if operation in ("delete_borrow_forecast","delete_lend_forecast"):
+        kind=operation.split("_")[1]
+        if find(db,"forecast_items",key)["kind"]!=kind:
+            raise ValueError("请选择对应的借贷计划")
+        db.execute("DELETE FROM forecast_items WHERE id=?",(key,))
+        return key
+    if operation == "installment_paid":
+        period=planning.month(data.get("month"))
+        paid=data.get("paid")
+        if type(paid) is not bool:
+            raise ValueError("收还状态无效")
+        if data.get("forecast") is True:
+            row=find(db,"forecast_items",key)
+            if period[:4]!=f"{row['year']:04d}" or json.loads(row["months"])[int(period[-2:])-1]<=0:
+                raise ValueError("找不到这一期计划")
+            marked=set(json.loads(row["paid_months"]))
+            if paid:
+                marked.add(period)
+            else:
+                marked.discard(period)
+            db.execute("UPDATE forecast_items SET paid_months=? WHERE id=?",(json.dumps(sorted(marked)),key))
+            return key
+        if find(db,"positions",key)["kind"] not in ("borrow","lend"):
+            raise ValueError("请选择一笔借贷项目")
+        cursor=db.execute("UPDATE installments SET paid=? WHERE position_id=? AND month=? AND amount>0",
+                          (paid,key,period))
+        if not cursor.rowcount:
+            raise ValueError("找不到这一期计划")
+        return key
+    if operation == "asset_image_import":
+        return image_import.save_assets(db,data)
     if operation == "archive":
         find(db, "books", key)
         if type(data.get("archived")) is not bool:
