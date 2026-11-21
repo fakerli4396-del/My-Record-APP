@@ -107,6 +107,7 @@ def export(source,data):
                 ["金额单位","所有金额列以整数分保存，100表示1元"],
                 ["文件结构","请保留所有工作表、列名和编号关联"],
                 ["导入方式","预览确认后替换当前全部数据，并自动备份原数据"],
+                ["账单图片","Excel 不包含图片附件，含图片的备份请使用 .db 文件"],
                 ["范围","关联的资金账户及业务资料随所选账本一并保留"]]
             sheet=wb.create_sheet("说明") if fmt=="xlsx" else wb.add_sheet("说明")
             for i,row in enumerate(instructions):

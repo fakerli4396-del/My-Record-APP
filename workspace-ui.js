@@ -62,7 +62,23 @@ const WorkspaceUI=(()=>{
       const key=scope==="year"?localDate(d).slice(0,7):localDate(d);if(!days.includes(key))days.push(key);
     }
     const values=days.map(d=>daily.get(d)||0),max=Math.max(1,...values),peak=values.indexOf(Math.max(...values));
-    const points=values.map((v,i)=>(60+i*740/Math.max(1,values.length-1))+","+(230-v/max*170)).join(" ");
+    const x=i=>60+i*740/Math.max(1,days.length-1);
+    const y=value=>230-value/max*170;
+    const points=values.map((value,i)=>x(i)+","+y(value)).join(" ");
+    const trend=title=>'<div class="asset-trend-wrap"><svg class="analysis-trend trend-'+kind+'" viewBox="0 0 860 285" aria-label="'+title+'">'+
+      '<line x1="60" y1="230" x2="810" y2="230"/><polyline points="'+points+'"/>'+
+      values.map((value,i)=>{
+        const date=days[i],periodStart=scope==="year"?date+"-01":date;
+        const periodEnd=scope==="year"?date+"-"+pad(DatePicker.lastDay(date)):date;
+        const width=Math.min(54,740/Math.max(1,days.length-1));
+        const tooltipX=Math.max(115,Math.min(745,x(i)));
+        const url="bills"+filterRoute({book,kind,category:q.get("category"),from:periodStart,to:periodEnd,month:periodStart.slice(0,7)});
+        return '<a class="analysis-point" href="#'+h(url)+'" aria-label="'+h(date+" "+money(value)+"，查看明细")+'">'+
+          '<rect class="analysis-hit" x="'+(x(i)-width/2)+'" y="46" width="'+width+'" height="200"/>'+
+          '<circle cx="'+x(i)+'" cy="'+y(value)+'" r="4"/>'+
+          '<g class="analysis-tooltip" transform="translate('+tooltipX+' '+(y(value)-27)+')"><rect x="-110" y="-19" width="220" height="27" rx="7"/>'+
+          '<text text-anchor="middle">'+h(date+" · "+money(value))+'</text></g></a>';
+      }).join("")+'<text x="60" y="266">'+start+'</text><text x="680" y="266">'+end+'</text></svg></div>';
     const controls='<form id="statsfilter" class="row aligned-controls">'+field("月份",input("month",month,'type="month" required'))+
       field("账本",select("book",[["","全部账本"],...state.books.map(b=>[b.id,b.name])],book).replace(" required",""))+
       field("统计范围",select("period",[["week","本周"],["month","本月"],["year","本年"]],scope))+
@@ -83,18 +99,14 @@ const WorkspaceUI=(()=>{
       return heading(categoryLabel(category)+" · 类目明细",start+" 至 "+end,link("stats?"+back,"返回统计分析"))+
         '<section class="panel"><h2>'+h(categoryLabel(category))+'类目下已'+label+'</h2>'+
         metrics({total:s[kind],average:rows.length?Math.round(s[kind]/rows.length):0},{total:"合计",average:"平均每次"+label})+'<p>共 '+rows.length+' 笔记录</p>'+
-        '<div class="asset-trend-wrap"><svg class="analysis-trend" viewBox="0 0 860 285" role="img" aria-label="类目趋势"><line x1="60" y1="230" x2="810" y2="230"/><polyline points="'+points+'"/>'+
-        values.map((v,i)=>'<circle cx="'+(60+i*740/Math.max(1,values.length-1))+'" cy="'+(230-v/max*170)+'" r="4"><title>'+days[i]+' '+money(v)+'</title></circle>').join("")+
-        '<text x="60" y="266">'+start+'</text><text x="680" y="266">'+end+'</text></svg></div></section>'+
+        trend("类目趋势")+'</section>'+
         '<div class="heading"><h2>类目明细</h2><div class="toolbar">'+link("stats"+filterRoute({...Object.fromEntries(q),sort:"time"}),"按时间")+link("stats"+filterRoute({...Object.fromEntries(q),sort:"amount"}),"按金额")+'</div></div>'+billTable(sorted);
     }
     return heading("统计分析",start+" 至 "+end)+'<section class="panel">'+controls+'</section>'+
       '<section class="panel"><h2>'+(scope==="month"?"本月结余":"期间结余")+'</h2>'+metrics(s)+'<p class="muted">较上一'+({week:"周",month:"月",year:"年"})[scope]+'结余变化 '+money(s.net-before.net)+'</p></section>'+
       '<section class="panel"><h2>'+label+'趋势概况</h2><p>最高'+(scope==="year"?'月份':'日期')+' '+days[peak]+' <strong class="expense">'+money(values[peak])+'</strong></p>'+
       metrics({avg:Math.round(s[kind]/days.length)},{avg:scope==="year"?"平均每月":"平均每日"})+'<p>累计 '+rows.length+' 笔</p>'+
-      '<div class="asset-trend-wrap"><svg class="analysis-trend" viewBox="0 0 860 285" role="img" aria-label="'+label+'趋势"><line x1="60" y1="230" x2="810" y2="230"/><polyline points="'+points+'"/>'+
-      values.map((v,i)=>'<circle cx="'+(60+i*740/Math.max(1,values.length-1))+'" cy="'+(230-v/max*170)+'" r="4"><title>'+days[i]+' '+money(v)+'</title></circle>').join("")+
-      '<text x="60" y="266">'+start+'</text><text x="680" y="266">'+end+'</text></svg></div></section>'+
+      trend(label+"趋势")+'</section>'+
       '<section class="panel"><h2>'+label+'占比概况</h2>'+(rank.length?AssetUI.ring(rank.map(([id,v])=>[categoryLabel(by(state.categories,id)),v]),s[kind],label,rank.map(([id])=>"stats"+filterRoute({book,month,period:scope,date:q.get("date"),kind,category:id}))):'<p>暂无数据</p>')+'</section>'+
       '<section class="panel"><h2>'+label+'类目排行</h2><ol class="ranking">'+more(categoryRows)+'</ol></section>'+
       '<section class="panel"><h2>'+label+'明细排行</h2><ol class="ranking">'+more(detailRows)+'</ol></section>'+monthly;
@@ -103,16 +115,19 @@ const WorkspaceUI=(()=>{
     if(String(id).startsWith("f")){forecastForm(Number(String(id).slice(1)));return;}
     const credit=String(id).startsWith("a"),p=credit?by(state.accounts,String(id).slice(1)):by(state.positions,id),key=credit?"account_id":"position_id";
     const schedules=credit?state.credit_installments:state.installments;
-    const old=(credit?state.credit_plans:state.loan_plans).find(r=>r[key]===p.id),year=Number(route().q.get("year"))||new Date().getFullYear();
+    const query=route().q;
+    const backQuery=new URLSearchParams((query.get("return")||"").split("?")[1]);
+    const old=(credit?state.credit_plans:state.loan_plans).find(r=>r[key]===p.id),year=boardYear(query.has("year")?query:backQuery);
     const form=openForm("借贷月度计划",
       field("年份",input("year",year,'type="number" min="1" max="9999" required'))+
       field("年化利率（%，选填）",input("annual_rate",old?.annual_rate,'type="number" min="0" step="0.0001"'))+
       '<p>按约定填写各月应还 / 应收总额，包含本金与利息。计划不生成实际流水。</p>'+
-      Array.from({length:12},(_,i)=>field((i+1)+"月（元）",moneyInput("m"+i,schedules.find(r=>r[key]===p.id&&r.month===year+"-"+pad(i+1))?.amount||0))).join(""),
+      Array.from({length:12},(_,i)=>field((i+1)+"月（元）",moneyInput("m"+i,schedules.find(r=>r[key]===p.id&&r.month===String(year).padStart(4,"0")+"-"+pad(i+1))?.amount||0))).join(""),
       (d,send)=>saveAndRender(send,{action:"loan_plan",[key]:p.id,year:Number(d.year),annual_rate:d.annual_rate,
         months:Array.from({length:12},(_,i)=>parseMoney(d["m"+i],false,true))}));
     form.elements.year.onchange=()=>{
-      for(let i=0;i<12;i++)form.elements["m"+i].value=(schedules.find(r=>r[key]===p.id&&r.month===form.elements.year.value+"-"+pad(i+1))?.amount||0)/100;
+      const yearKey=String(Number(form.elements.year.value)).padStart(4,"0");
+      for(let i=0;i<12;i++)form.elements["m"+i].value=(schedules.find(r=>r[key]===p.id&&r.month===yearKey+"-"+pad(i+1))?.amount||0)/100;
     };
   }
   function forecastForm(id){
@@ -121,38 +136,110 @@ const WorkspaceUI=(()=>{
       Array.from({length:12},(_,i)=>field((i+1)+"月（元）",moneyInput("m"+i,JSON.parse(p.months)[i]))).join(""),
       (d,send)=>saveAndRender(send,{action:"forecast_plan",id,year:Number(d.year),months:Array.from({length:12},(_,i)=>parseMoney(d["m"+i],false,true))}));
   }
+  function remainingPrincipal(p){
+    const entry=state.portfolio[p.owner].current.entries.find(e=>e.kind==="position"&&e.id===p.id);
+    return (p.kind==="borrow"?entry?.debts:entry?.assets)??0;
+  }
+  function boardYear(q){
+    const year=Number(q.get("year"));
+    return Number.isInteger(year)&&year>=1&&year<=9999?year:new Date().getFullYear();
+  }
+  function yearlyPrincipalPreview(row){
+    const output=row.querySelector("[data-yearly-principal]");
+    if(!output)return;
+    try{
+      const total=Array.from({length:12},(_,i)=>parseMoney(row.querySelector('[name="m'+i+'"]').value||"0",false,true))
+        .reduce((sum,amount)=>sum+amount,0);
+      output.textContent=money(total);
+    }catch{output.textContent="—";}
+  }
+  function principalForm(id){
+    const forecast=String(id).startsWith("f");
+    const p=forecast?by(state.forecast_items,String(id).slice(1)):by(state.positions,id);
+    openForm(p.kind==="lend"?"设置账务本金":"设置剩余本金",'<p>'+h(p.name)+'</p>'+
+      field("剩余本金（元）",moneyInput("principal",forecast?null:remainingPrincipal(p)))+
+      (forecast?'<p>保存后会登记为正式借贷项目，并保留月度计划和已还 / 已收标记。</p>':"")+
+      '<p>从今天起按新余额计算。此操作不生成收付款流水。</p>',
+      async(d,send)=>{
+        const result=await send({action:"loan_principal",id:p.id,forecast,principal:parseMoney(d.principal,false,true)});
+        const [,detail]=route().parts;
+        const back=detailReturn(assetURL(p.owner,p.kind));
+        await refresh();
+        if(forecast&&detail==="forecast")location.hash="assets/detail/"+result.id+"?return="+encodeURIComponent(back);
+        render();
+      });
+  }
   function board(owner,kind,q){
     const borrowing=kind==="borrow";
-    const year=Number(q.get("year"))||new Date().getFullYear();
+    const year=boardYear(q), yearKey=String(year).padStart(4,"0");
     const plans=[...state.loan_plans,...state.credit_plans.map(r=>({...r,position_id:"a"+r.account_id}))];
     const credit=kind==="borrow"?state.accounts.filter(a=>a.owner===owner&&a.account_type==="credit"&&a.balance<0).map(a=>({...a,id:"a"+a.id,accountID:a.id,credit:true,cost:-a.balance})):[];
 
     const forecasts=state.forecast_items.filter(p=>p.owner===owner&&p.kind===kind).map(p=>({...p,id:"f"+p.id,forecast:true,cost:0}));
-    const list=[...state.positions.filter(p=>p.owner===owner&&p.kind===kind),...credit,...forecasts];
+    const loans=state.positions.filter(p=>p.owner===owner&&p.kind===kind).map(p=>({...p,cost:remainingPrincipal(p)}));
+    const list=[...loans,...credit,...forecasts];
     const sums=Array(12).fill(0);
     const rows=list.map(p=>{
-      const plan=plans.find(r=>r.position_id===p.id),amounts=p.forecast?(p.year===year?JSON.parse(p.months):Array(12).fill(0)):sums.map((_,i)=>(p.credit?state.credit_installments:state.installments).find(r=>r[p.credit?"account_id":"position_id"]===(p.credit?p.accountID:p.id)&&r.month===year+"-"+pad(i+1))?.amount||0);
+      const plan=plans.find(r=>r.position_id===p.id),amounts=p.forecast?(p.year===year?JSON.parse(p.months):Array(12).fill(0)):sums.map((_,i)=>(p.credit?state.credit_installments:state.installments).find(r=>r[p.credit?"account_id":"position_id"]===(p.credit?p.accountID:p.id)&&r.month===yearKey+"-"+pad(i+1))?.amount||0);
+      const total=amounts.reduce((sum,amount)=>sum+amount,0);
       const paidMonths=new Set(p.forecast?JSON.parse(p.paid_months||"[]"):
         (p.credit?[]:state.installments.filter(row=>row.position_id===p.id&&row.paid).map(row=>row.month)));
       amounts.forEach((v,i)=>sums[i]+=v);
-      return '<tr><th scope="row" class="board-content">'+'<a class="board-name" href="#'+(p.forecast?"assets/forecast/"+p.id.slice(1):p.credit?"assets/account/"+p.accountID:"assets/detail/"+p.id)+'">'+h(p.name)+'</a></th>'+'<td>'+(p.forecast?"未登记本金":money(p.cost))+'</td><td>'+h((p.annual_rate||plan?.annual_rate)?(p.annual_rate||plan.annual_rate)+"%":"—")+'</td>'+amounts.map((v,i)=>'<td class="'+(v&&paidMonths.has(year+"-"+pad(i+1))?'is-paid':'')+'">'+(v?money(v):"—")+'</td>').join("")+'<td>'+money(amounts.reduce((a,b)=>a+b,0))+'</td><td class="board-actions">'+'<div class="toolbar">'+btn("loanplan:"+p.id,"设置月度计划")+(!p.credit?btn("deleteloan:"+kind+":"+p.id,"删除"):"")+'</div></td></tr>';
+      const operations=btn("loanplan:"+p.id,"设置月度计划")+(p.credit?"":btn("moveloan:"+p.id,"转到"+owners[otherOwner(owner)])+
+        '<input type="checkbox" data-board-item value="'+p.id+'" aria-label="选择 '+h(p.name)+'">'+btn("deleteloan:"+kind+":"+p.id,"删除"));
+      return '<tr><th scope="row" class="board-content">'+'<a class="board-name" href="#'+(p.forecast?"assets/forecast/"+p.id.slice(1):p.credit?"assets/account/"+p.accountID:"assets/detail/"+p.id)+'?return='+encodeURIComponent(location.hash.slice(1))+'">'+h(p.name)+'</a></th><td>'+h((p.annual_rate||plan?.annual_rate)?(p.annual_rate||plan.annual_rate)+"%":"—")+'</td><td>'+money(total)+'</td>'+amounts.map((v,i)=>'<td class="'+(v&&paidMonths.has(yearKey+"-"+pad(i+1))?'is-paid':'')+'">'+(v?money(v):"—")+'</td>').join("")+'<td class="board-actions"><div class="toolbar">'+operations+'</div></td></tr>';
     }).join("");
+    const annualTotal=sums.reduce((sum,amount)=>sum+amount,0);
     return '<section class="panel loan-panel"><h2>'+(kind==="borrow"?"负债明细看板":"借款应收看板")+ '</h2>'+btn("imageimport:"+owner+":"+kind,"图片识别导入")+ '<form id="assetchart" class="row aligned-controls board-controls">'+input("owner",owner,'type="hidden"')+input("tab",kind,'type="hidden"')+
       field("年份",input("year",year,'type="number" min="1" max="9999" required'))+'<button>查看</button></form>'+
-      '<p>总'+(kind==="borrow"?"负债":"借款应收")+' '+money(list.reduce((s,p)=>s+p.cost,0))+' · 未配置计划的记录显示 —</p><div class="inventory-scroll board-frame"><table class="table loan-board"><thead><tr><th>内容</th>'+'<th>剩余本金</th><th>年化利率</th>'+
-      sums.map((_,i)=>'<th>'+(i+1)+'月'+(kind==="borrow"?"应还":"应收")+'</th>').join("")+'<th>全年合计</th><th>操作</th></tr></thead><tbody>'+rows+
-      '<tr><th colspan="3">每月合计</th>'+sums.map(v=>'<td>'+money(v)+'</td>').join("")+'<td>'+money(sums.reduce((a,b)=>a+b,0))+'</td><td></td></tr></tbody></table></div></section>';
+      '<p>'+(borrowing?"总负债 "+money(list.reduce((s,p)=>s+p.cost,0)):"本年应收合计 "+money(annualTotal))+' · 未配置计划的月份显示 —</p><div class="inventory-scroll board-frame" data-board-key="'+owner+':'+kind+':'+year+'"><table class="table loan-board"><thead><tr><th>内容</th><th>年化利率</th><th>全年合计</th>'+
+      sums.map((_,i)=>'<th>'+(i+1)+'月'+(kind==="borrow"?"应还":"应收")+'</th>').join("")+'<th class="board-actions"><div class="toolbar board-selection"><label><input type="checkbox" data-board-all>全选</label><button type="button" data-act="deletechecked:'+kind+'" disabled>批量删除</button></div></th></tr></thead><tbody>'+rows+
+      '<tr><th colspan="2">每月合计</th><td>'+money(annualTotal)+'</td>'+sums.map(v=>'<td>'+money(v)+'</td>').join("")+'<td></td></tr></tbody></table></div></section>';
   }
-  function deleteLoan(kind,id){
-    const forecast=String(id).startsWith("f");
-    const item=forecast?by(state.forecast_items,id.slice(1)):by(state.positions,id);
-    const label=kind==="lend"?"借出":"借入";
-    const warning=forecast?"将移除该项目的月度计划。":"将删除该项目、分期计划和关联流水，并重新计算账户余额。";
-    ask("删除"+label+"项目","删除「"+item.name+"」？"+warning,
-      send=>saveAndRender(send,{action:"delete_"+kind+(forecast?"_forecast":""),id:item.id}),"确认删除");
+  function otherOwner(owner){return owner==="family"?"personal":"family";}
+  function moveLoan(id){
+    const forecast=id.startsWith("f"), key=Number(forecast?id.slice(1):id);
+    const item=by(forecast?state.forecast_items:state.positions,key);
+    const target=otherOwner(item.owner);
+    const query=route().q;
+    const sourceQuery=new URLSearchParams((query.get("return")||"").split("?")[1]);
+    const year=boardYear(query.has("year")?query:sourceQuery);
+    const back=assetURL(target,item.kind)+"&year="+year;
+    ask("转到"+owners[target],"将「"+item.name+"」从"+owners[item.owner]+"转到"+owners[target]+"？月度计划、收还款标记和流水随项目保留。",async send=>{
+      await send({action:"move_loan",id:key,forecast,kind:item.kind,owner:item.owner,target});
+      await refresh();location.hash=back;render();
+    },"确认转移");
+  }
+  function updateSelection(control){
+    const frame=control.closest(".board-frame");
+    const boxes=[...frame.querySelectorAll("[data-board-item]")];
+    const all=frame.querySelector("[data-board-all]");
+    if(control===all) boxes.forEach(box=>{box.checked=all.checked;});
+    const count=boxes.filter(box=>box.checked).length;
+    all.checked=count>0&&count===boxes.length;
+    all.indeterminate=count>0&&count<boxes.length;
+    frame.querySelector('[data-act^="deletechecked:"]').disabled=count===0;
+  }
+  function deleteLoan(kind,ids){
+    if(!ids.length)return;
+    const entries=ids.map(id=>{
+      const forecast=String(id).startsWith("f");
+      return {forecast,id:Number(forecast?String(id).slice(1):id)};
+    });
+    const first=entries[0];
+    const item=by(first.forecast?state.forecast_items:state.positions,first.id);
+    const text=ids.length===1?"删除「"+item.name+"」？":"删除已选中的 "+ids.length+" 个项目？";
+    const [pageName,detail]=route().parts;
+    const back=detailReturn(assetURL(item.owner,kind));
+    ask("删除借贷项目",text+"这也会删除对应计划和关联流水，并重新计算账户余额。",async send=>{
+      await send({action:"delete_loans",owner:item.owner,kind,entries});
+      await refresh();
+      if(pageName==="assets"&&detail) location.hash=back;
+      render();
+    },"确认删除");
   }
   function forecastDetail(item){
-    return heading(item.name,owners[item.owner]+" · "+assetTabs[item.kind],link(assetURL(item.owner,item.kind),"返回看板"))+
+    return heading(item.name,owners[item.owner]+" · "+assetTabs[item.kind],link(detailReturn(assetURL(item.owner,item.kind)),"返回看板")+btn("moveloan:f"+item.id,"转到"+owners[otherOwner(item.owner)])+btn("loanprincipal:f"+item.id,item.kind==="lend"?"登记账务本金":"设置剩余本金")+btn("deleteloan:"+item.kind+":f"+item.id,"删除项目"))+
       paymentSchedule(item,true);
   }
   function paymentSchedule(position,forecast=false){
@@ -189,9 +276,9 @@ const WorkspaceUI=(()=>{
     const form=openForm("导出数据",field("格式",select("format",[["db","SQLite .db"],["xlsx","Excel .xlsx"],["xls","Excel .xls"]],"db"))+
       field("账本",select("book",[["","全部账本"],...state.books.map(b=>[b.id,b.name])],"").replace(" required",""))+
       field("资产归属",select("owner",[["all","家庭与个人"],["family","家庭资产"],["personal","个人资产"],["none","仅账单"]],"all"))+
-      field("导出目录完整路径",input("path","","required"))+'<p>为保证流水可还原，会同时包含所选记录关联的账户及业务资料。筛选导出保留账户当前余额，未选流水的影响结转至期初余额。</p>',async d=>{
+      field("导出目录完整路径",input("path","","required"))+'<p>SQLite .db 保留账单图片。Excel 导出只含表格数据。筛选导出保留账户当前余额，未选流水的影响结转至期初余额。</p>',async d=>{
         const result=await api("/api/files",{...d,action:"export_data"});flash("已导出至 "+result.path);
       },"导出");
   }
-  return {bills,stats,budgetForm,board,loanForm,paymentSchedule,forecastDetail,markPaid,deleteLoan,exchange};
+  return {bills,stats,budgetForm,board,boardYear,yearlyPrincipalPreview,loanForm,principalForm,remainingPrincipal,paymentSchedule,forecastDetail,markPaid,moveLoan,deleteLoan,updateSelection,exchange};
 })();

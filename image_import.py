@@ -179,7 +179,55 @@ def save_assets(db,data):
     return db.execute("INSERT INTO image_imports(fingerprint) VALUES (?)",(fingerprint,)).lastrowid
 
 
-def parse(words, numeric=None):
+def table_amounts(words, headers, spacing):
+    cells = {month: [] for month, _ in headers}
+    fragments = []
+    for word in sorted(words, key=lambda w: w["x"]):
+        token = unicodedata.normalize("NFKC", word["text"]).replace("·", ".").replace("。", ".").strip().lstrip("¥")
+        if not re.fullmatch(r"[0-9.,]+", token):
+            continue
+        previous = fragments[-1] if fragments else None
+        if (previous and re.fullmatch(r"[0-9,]+", previous["text"]) and
+                re.fullmatch(r"\.[0-9]{0,2}", token) and
+                -word["h"]*.35 <= word["x"]-previous["end"] <= word["h"]*.65):
+            previous["text"] += token
+            previous["end"] = word["x"]+word["w"]
+        elif (previous and previous["text"].endswith(".") and re.fullmatch(r"[0-9]{1,2}", token)
+                and -word["h"]*.35 <= word["x"]-previous["end"] <= word["h"]*.65):
+            previous["text"] += token
+            previous["end"] = word["x"]+word["w"]
+        else:
+            fragments.append(dict(text=token, center=word["x"]+word["w"]/2, end=word["x"]+word["w"]))
+    for fragment in fragments:
+        month, x = min(headers, key=lambda header: abs(header[1]-fragment["center"]))
+        if abs(x-fragment["center"]) <= spacing*.5:
+            cells[month].append(fragment["text"])
+    return cells
+
+
+def reconcile_cell(chinese, english):
+    def parse_parts(parts):
+        candidate = "".join(parts)
+        if not re.fullmatch(r"(?:[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+)(?:\.[0-9]{1,2})?", candidate):
+            return "", None
+        return candidate.replace(",", ""), money(candidate)
+
+    left, left_value = parse_parts(chinese)
+    right, right_value = parse_parts(english)
+    if left_value is None: return right_value
+    if right_value is None or right_value == left_value: return left_value
+    if "." in left or "." in right:
+        if left.startswith(right+"."): return left_value
+        if right.startswith(left+"."): return right_value
+    if len(left)>len(right) and len(right)>=2 and re.search(".*".join(map(re.escape,right)), left):
+        return left_value
+    if len(right)>len(left) and len(left)>=2 and re.search(".*".join(map(re.escape,left)), right):
+        return right_value
+    # OCR engines can disagree on a digit. Leave it available for review.
+    return None
+
+
+def parse(words, numeric=None, name_words=None):
     numeric=numeric or []
     groups=group_rows(words)
     headers=[]
@@ -190,6 +238,8 @@ def parse(words, numeric=None):
             text+=w["text"];positions.extend([w["x"]+w["w"]/2]*len(w["text"]))
         matches=list(re.finditer(r"(?<![0-9])(1[0-2]|[1-9])月",text))
         if len(matches)>=2:
+            columns=text[:matches[0].start()]
+            total_only="全年合计" in columns and "本金" not in columns
             headers=[(int(m.group(1)),positions[m.start()]) for m in matches];header_y=group["y"];break
     if not headers:
         return {"items":[],"warnings":["未找到月份表头，请使用包含月份和完整数据行的清晰截图"]}
@@ -198,22 +248,22 @@ def parse(words, numeric=None):
     for group in groups:
         if group["y"]<=header_y+5: continue
         line=sorted(group["words"],key=lambda w:w["x"])
-        values=[None]*12;left=[];rate="";cells={m:[] for m,_ in headers};left_words=[]
-        for w in line:
-            text=w["text"].strip();cx=w["x"]+w["w"]/2
-            if cx<headers[0][1]-spacing*.5:left_words.append(text)
-            else:
-                nearest=min(headers,key=lambda pair:abs(pair[1]-cx))
-                if abs(nearest[1]-cx)<=spacing*.48:cells[nearest[0]].append(text)
-        # English recognition supplies decimal amounts and rates, Chinese recognition retains labels.
+        values=[None]*12;left=[];rate="";left_words=[]
+        cutoff=headers[0][1]-spacing*.5
         numeric_line=[w for w in numeric if abs(w["y"]+w["h"]/2-group["y"])<max(8,w["h"]*.65)]
-        if numeric_line:
-            left_words=[w["text"] for w in line if w["x"]+w["w"]/2<headers[0][1]-spacing*.5 and not any(
-                abs((w["x"]+w["w"]/2)-(n["x"]+n["w"]/2))<(w["w"]+n["w"])/2 for n in numeric_line)]
-            left_words += [n["text"] for n in sorted(numeric_line,key=lambda n:n["x"]) if n["x"]+n["w"]/2<headers[0][1]-spacing*.5]
-            for month,x in headers:
-                parts=[n["text"] for n in sorted(numeric_line,key=lambda n:n["x"]) if abs(n["x"]+n["w"]/2-x)<spacing*.48]
-                if parts:cells[month]=parts
+        # Keep the entire Chinese name, even when English OCR overlaps part of it.
+        left_line=[w for w in line if w["x"]+w["w"]/2<cutoff]
+        left_words=[w["text"] for w in left_line if re.search(r"[\u4e00-\u9fff]",w["text"]) or not any(
+            abs((w["x"]+w["w"]/2)-(n["x"]+n["w"]/2))<(w["w"]+n["w"])/2
+            for n in numeric_line)]
+        left_words += [n["text"] for n in sorted(numeric_line,key=lambda n:n["x"])
+                       if n["x"]+n["w"]/2<cutoff and not any(
+                           re.search(r"[\u4e00-\u9fff]",w["text"]) and
+                           w["x"]<=n["x"]+n["w"]/2<=w["x"]+w["w"] for w in left_line)]
+        cells=table_amounts(line,headers,spacing)
+        numeric_cells=table_amounts(numeric_line,headers,spacing)
+        review_line=[w for w in (name_words or []) if abs(w["y"]+w["h"]/2-group["y"])<max(6,w["h"]*.5)]
+        review_cells=table_amounts(review_line,headers,spacing)
         left_text="".join(left_words).replace("．",".").replace("。",".").replace("·",".")
         rate_match=re.search(r"([0-9]+(?:\.[0-9]+)?)%",left_text)
         if rate_match:
@@ -224,15 +274,22 @@ def parse(words, numeric=None):
             if value is not None:left.append(value)
         name=re.sub(r"[0-9][0-9,]*(?:\.[0-9]+)?","",left_text).strip(" %：:")
         for month,parts in cells.items():
-            text="".join(parts).replace("．",".").replace("。",".").replace("·",".")
-            values[month-1]=money(text)
+            values[month-1]=reconcile_cell(parts,numeric_cells[month])
         name=clean_name(name)
+        if name_words:
+            alternate="".join(w["text"] for w in sorted(name_words,key=lambda w:w["x"])
+                              if abs(w["y"]+w["h"]/2-group["y"])<max(6,w["h"]*.5)
+                              and re.search(r"[\u4e00-\u9fff]",w["text"]))
+            alternate=clean_name(alternate)
+            if alternate and len(alternate)>len(name) and (not name or name in alternate):
+                name=alternate
         if not name or any(s in name for s in ("合计","总计","年支出","年收入")):continue
-        if not any(v is not None for v in values) and not left:continue
-        if any(r["name"]==name and r["principal"]==(left[-1] if left else None) and r["months"]==values for r in items):
+        if not any(cells.values()) and not any(numeric_cells.values()) and not any(review_cells.values()) and not left:continue
+        principal=left[-1] if left and not total_only else None
+        if any(r["name"]==name and r["principal"]==principal and r["months"]==values for r in items):
             continue
-        items.append({"name":name,"principal":left[-1] if left else None,"annual_rate":rate,
-                      "months":values,"mode":"loan" if left else "plan"})
+        items.append({"name":name,"principal":principal,"annual_rate":rate,
+                      "months":values,"mode":"loan" if principal is not None else "plan"})
     return {"items":items,"warnings":["请逐行核对识别结果。空白月份保持待确认，缺少本金可补充，或仅保存月度计划。"]}
 
 def read_ocr(image,work,asset):
@@ -243,27 +300,34 @@ def read_ocr(image,work,asset):
         scale=min(2,2500/max(image.size))
         tile_height=image.height
     overlap=round(80/scale)
-    words,numeric,lines=[],[],[]
+    words,numeric,lines,review_words=[],[],[],[]
     for top in range(0,image.height,tile_height):
         bottom=min(top+tile_height,image.height)
         crop_top=max(0,top-overlap)
         crop=image.crop((0,crop_top,image.width,min(image.height,bottom+overlap)))
         crop=crop.resize((max(1,round(crop.width*scale)),max(1,round(crop.height*scale))),Image.Resampling.LANCZOS)
         source=Path(work)/"input.png"
-        crop.save(source)
-        result=subprocess.run(["powershell.exe","-NoProfile","-ExecutionPolicy","Bypass","-File",
-            str(Path(__file__).with_name("ocr.ps1")),str(source)],capture_output=True,timeout=25,
-            creationflags=subprocess.CREATE_NO_WINDOW)
-        if result.returncode:
-            raise ValueError("本地识别失败，请确认Windows中文OCR语言已安装："+result.stderr.decode("utf8",errors="replace")[-250:])
-        page=json.loads(result.stdout.decode("utf-8-sig"))
+        def scan(bitmap):
+            bitmap.save(source)
+            result=subprocess.run(["powershell.exe","-NoProfile","-ExecutionPolicy","Bypass","-File",
+                str(Path(__file__).with_name("ocr.ps1")),str(source)],capture_output=True,timeout=25,
+                creationflags=subprocess.CREATE_NO_WINDOW)
+            if result.returncode:
+                raise ValueError("本地识别失败，请确认Windows中文OCR语言已安装："+result.stderr.decode("utf8",errors="replace")[-250:])
+            return json.loads(result.stdout.decode("utf-8-sig"))
+
+        page=scan(crop)
+        if not asset:
+            from PIL import ImageOps
+            review=scan(ImageOps.autocontrast(crop.convert("L")).convert("RGB"))
+            review_words.extend(review["words"])
         lines.append(page["text"])
         for field,target in (("words",words),("numeric",numeric)):
             for word in page.get(field,[]):
                 word["y"]+=crop_top*scale
                 if top*scale<=word["y"]+word["h"]/2<bottom*scale:
                     target.append(word)
-    return {"words":words,"numeric":numeric,"text":"\n".join(lines)}
+    return {"words":words,"numeric":numeric,"review_words":review_words,"text":"\n".join(lines)}
 
 
 def recognize(data):
@@ -277,10 +341,12 @@ def recognize(data):
         with tempfile.TemporaryDirectory() as work:
             recognized=read_ocr(image,work,data.get("kind")=="asset")
         parsed=(parse_assets(recognized["words"],recognized.get("numeric")) if data.get("kind")=="asset"
-                else parse(recognized["words"],recognized.get("numeric")))
-        if data.get("kind")=="lend" and not any(term in recognized["text"].replace(" ","") for term in ("借出本金","剩余本金","应收本金")):
-            for item in parsed["items"]:item["mode"]="plan"
-            parsed["warnings"].append("借出图片左侧金额可能是全年合计，默认仅月度计划；如需登记应收资产，请选择登记本金并核对本金。")
+                else parse(recognized["words"],recognized.get("numeric"),recognized.get("review_words")))
+        if data.get("kind")=="lend":
+            has_principal = any(term in recognized["text"].replace(" ","") for term in ("借出本金","剩余本金","应收本金"))
+            for item in parsed["items"]:
+                item["mode"] = "loan" if has_principal else "plan"
+            parsed["warnings"].append("借出看板按每行 12 个月应收金额自动计算剩余本金，请核对各月金额。")
         return dict(parsed,text=recognized["text"])
     except ValueError:raise
     except Exception as e:raise ValueError("无法识别图片，请选择清晰的PNG或JPG表格图片") from e
@@ -310,7 +376,10 @@ def apply(db,data):
         months=[ledger.cents(v,0) for v in months]
         rate=str(item.get("annual_rate",""))
         if rate and (not re.fullmatch(r"[0-9]{1,3}(\.[0-9]{1,4})?",rate) or float(rate)>100):raise ValueError("年化利率无效")
-        if item.get("mode")=="loan":
+        if item.get("mode")=="loan" and kind=="lend":
+            ledger.write_position(db,dict(name=label,kind=kind,owner=owner,day=day,year=year,
+                                          annual_rate=rate,months=months))
+        elif item.get("mode")=="loan":
             principal=ledger.cents(item.get("principal"))
             key=ledger.write_position(db,dict(name=label,kind=kind,owner=owner,day=day,principal=principal,opening_only=True))
             planning.save(db,dict(action="loan_plan",position_id=key,book_id=book_id,year=year,annual_rate=rate,months=months))

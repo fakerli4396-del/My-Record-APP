@@ -30,7 +30,7 @@ const AssetUI = (() => {
       (fromImage?field("初始估值（元）",moneyInput("value",old.purchase_price)):"")+
       field("购买日期",input("purchase_day",old.purchase_day||"",'type="date" max="'+today()+'"'+required))+
       field("是否有贷款",select("has_loan",[["0","无贷款"],["1","有贷款"]],old.has_loan?"1":"0"))+
-      field("资产图标",select("asset_icon",iconChoices(),old.asset_icon||"other"));
+      iconField("资产图标","asset_icon",old.asset_icon||"other");
   }
   function assetData(d) {
     return {purchase_price:d.purchase_price===""?null:parseMoney(d.purchase_price,false,true),purchase_day:d.purchase_day||null,
@@ -47,8 +47,8 @@ const AssetUI = (() => {
         '<div><small>'+label+'</small><strong>'+value+'</strong></div>').join("")+'</a>';
   }
   function positionForm(owner,kind,old,subtype) {
-    const loan=["borrow","lend"].includes(kind), init=loan&&!old, asset=kind==="asset";
-    const monthlyLabel=kind==="lend"?"每月应收":"每月应还";
+    const loan=["borrow","lend"].includes(kind), asset=kind==="asset";
+    const newBorrow=kind==="borrow"&&!old, newLend=kind==="lend"&&!old;
     const ownership=field("归属",select("owner",Object.entries(owners),old?.owner||owner));
     const form=openForm((old?"编辑":"新增")+assetTabs[kind],
       field("名称",input("name",old?.name,"required maxlength=80"))+
@@ -60,12 +60,17 @@ const AssetUI = (() => {
         field("已有持仓市值（元，无持仓填 0）",moneyInput("initial_market",0))+
         field("持仓登记日期",input("day",today(),'type="date" required'))+'<small>已有持仓只登记资产，不扣减资金账户；之后的新投入在详情中记录。</small>':"")+
       (loan?field("到期日",input("due",old?.due,'type="date"')):"")+
-      (init?field(kind==="lend"?"借出本金（元）":"借入本金（元）",moneyInput("principal"))+
+      (newLend?field("计划年份",input("year",WorkspaceUI.boardYear(route().q),'type="number" min="1" max="9999" required'))+
+        field("本金登记日期",input("day",today(),'type="date" required'))+
+        field("年化利率（%，选填）",input("annual_rate","",'type="number" min="0" step="0.0001"'))+
+        '<div class="ocr-months">'+Array.from({length:12},(_,i)=>field((i+1)+"月应收（元）",moneyInput("m"+i,0))).join("")+'</div>'+
+        '<p>剩余本金（自动计算） <output data-yearly-principal aria-live="polite"></output></p>':"")+
+      (newBorrow?field("借入本金（元）",moneyInput("principal"))+
         field("总利息（元）",moneyInput("total_interest",0))+
         field("还款期数（月）",input("term_months",12,'type="number" min="1" max="600" required'))+
-        field(kind==="lend"?"借出日期":"借入日期",input("day",today(),'type="date" required'))+
-        field(kind==="lend"?"首期收回月份":"首期还款月份",input("first_month",thisMonth(),'type="month" required'))+
-        field(monthlyLabel+"（元，留空自动分配）",input("monthly_payment","",'inputmode="decimal"'))+
+        field("借入日期",input("day",today(),'type="date" required'))+
+        field("首期还款月份",input("first_month",thisMonth(),'type="month" required'))+
+        field("每月应还（元，留空自动分配）",input("monthly_payment","",'inputmode="decimal"'))+
         '<p id="loan-estimate" class="muted" aria-live="polite"></p>'+
         '<small>平息年化 = 总利息 ÷ 本金 × 12 ÷ 期数。自动分配时各期相差最多一分，手填月供时由末期结清余款。</small>':"")+
       field("备注",input("note",old?.note,"maxlength=500"))+(asset?ownership:""),async(d,send)=>{
@@ -73,15 +78,21 @@ const AssetUI = (() => {
           ...(asset?{...assetData(d),...await iconData(d)}:{}),
           ...(asset&&!old?{value:parseMoney(d.value,false,true),day:today()}:{}),
           ...(kind==="invest"&&!old?{initial_cost:parseMoney(d.initial_cost,false,true),initial_market:parseMoney(d.initial_market,false,true)}:{}),
-          ...(init?{opening_only:true,principal:parseMoney(d.principal),total_interest:parseMoney(d.total_interest,false,true),
-            term_months:Number(d.term_months),monthly_payment:d.monthly_payment?parseMoney(d.monthly_payment):null}:{})});
-        await refresh();location.hash="assets/detail/"+result.id;render();
+          ...(newBorrow?{opening_only:true,principal:parseMoney(d.principal),total_interest:parseMoney(d.total_interest,false,true),
+            term_months:Number(d.term_months),monthly_payment:d.monthly_payment?parseMoney(d.monthly_payment):null}:{}),
+          ...(newLend?{year:Number(d.year),months:Array.from({length:12},(_,i)=>parseMoney(d["m"+i],false,true))}:{})});
+        const back=newLend?"?return="+encodeURIComponent(assetURL(d.owner,"lend")+"&year="+d.year):"";
+        await refresh();location.hash="assets/detail/"+result.id+back;render();
       });
-    if(init){
+    if(newLend){
+      const estimate=()=>WorkspaceUI.yearlyPrincipalPreview(form);
+      form.addEventListener("input",estimate);estimate();
+    }
+    if(newBorrow){
       const estimate=()=>{
         const fields=form.elements,principal=Number(fields.principal.value),interest=Number(fields.total_interest.value),terms=Number(fields.term_months.value);
         form.querySelector("#loan-estimate").textContent=principal>0&&interest>=0&&terms>0?
-          "预计"+monthlyLabel+" "+(fields.monthly_payment.value?money(Math.round(Number(fields.monthly_payment.value)*100)):money(Math.ceil(Math.round((principal+interest)*100)/terms)))+
+          "预计每月应还 "+(fields.monthly_payment.value?money(Math.round(Number(fields.monthly_payment.value)*100)):money(Math.ceil(Math.round((principal+interest)*100)/terms)))+
           " · 平息年化 "+(interest/principal*1200/terms).toFixed(4)+"%":"填写本金、利息和期数后显示预计月供及利率";
       };
       form.addEventListener("input",estimate);estimate();
@@ -148,13 +159,14 @@ const AssetUI = (() => {
     if(sub==="forecast" && by(state.forecast_items,id)) return WorkspaceUI.forecastDetail(by(state.forecast_items,id));
     if(sub==="detail" && by(state.positions,id)) return viewPosition(by(state.positions,id));
     const owner=q.get("owner")==="personal"?"personal":"family";
-    const valid={overview:"资产概览",...assetTabs,charts:"图表分析"};
+    const valid={overview:"资产概览",cash:"现金看板",...assetTabs,charts:"图表分析"};
     const tab=Object.hasOwn(valid,q.get("tab"))?q.get("tab"):"overview";
     const nav=Object.entries(owners).map(([key,label])=>tabLink(assetURL(key,tab),label,key===owner)).join("");
     const tabs=Object.entries(valid).map(([key,label])=>tabLink(assetURL(owner,key),label,key===tab)).join("");
     let body="";
     if(tab==="charts") body=chartView(owner,q);
-    else if(tab==="overview") body=composition(state.portfolio[owner].current,"assets")+composition(state.portfolio[owner].current,"debts")+
+    else if(tab==="cash") body=cashView(owner);
+    else if(tab==="overview") body=cashSummary(owner,true)+composition(state.portfolio[owner].current,"assets")+composition(state.portfolio[owner].current,"debts")+
       '<div class="row">'+Object.entries(assetTabs).map(([key,label])=>link(assetURL(owner,key),label)).join("")+'</div>';
     else body='<div class="row">'+btn(tab==="accounts"?"newaccount:"+owner:"newpos:"+owner+":"+tab,"新增"+assetTabs[tab],true)+(tab==="asset"?btn("assetimage:"+owner,"图片识别导入"):"")+'</div>'+grouped(owner,tab);
     if(tab==="borrow"||tab==="lend") body=WorkspaceUI.board(owner,tab,q)+body;
@@ -188,16 +200,32 @@ const AssetUI = (() => {
     return '<svg class="allocation-ring" viewBox="0 0 420 236" role="img" aria-label="'+label+'分类占比">'+slices.join('')+notes.join('')+
       '<text class="ring-caption" x="210" y="111">合计</text><text class="ring-total" x="210" y="136" font-size="'+Math.min(16,148/money(total).length)+'">'+money(total)+'</text></svg>';
   }
+  function compositionEntries(current,metric) {
+    return current.entries.filter(e=>metric==="cash"?e.cash!=null:e[metric]>0&&(metric!=="assets"||e.cash==null))
+      .sort((a,b)=>b[metric]-a[metric]||a.id-b.id);
+  }
+  function cashSummary(owner,showLink=false){
+    const current=state.portfolio[owner].current;
+    return '<section class="panel cash-summary"><div class="heading"><h2>'+owners[owner]+'现金看板</h2>'+
+      (showLink?link(assetURL(owner,"cash"),"查看现金详情"):"")+'</div>'+
+      metrics(current,{cash:"现金合计"})+'<p>包含现金、储蓄卡和其他资金账户的余额。</p></section>';
+  }
+  function cashView(owner){
+    return cashSummary(owner)+composition(state.portfolio[owner].current,"cash");
+  }
   function composition(current,metric) {
-    const entries=current.entries.filter(e=>e[metric]>0).sort((a,b)=>b[metric]-a[metric]||a.id-b.id);
+    const entries=compositionEntries(current,metric), label=metric==="cash"?"现金":chartNames[metric];
+    const allocation=entries.filter(entry=>entry[metric]>0);
     const groups=new Map();
-    for(const entry of entries) groups.set(entry.group,(groups.get(entry.group)||0)+entry[metric]);
+    for(const entry of allocation) groups.set(entry.group,(groups.get(entry.group)||0)+entry[metric]);
     const ranked=[...groups].sort((a,b)=>b[1]-a[1]);
-    const total=current[metric];
-    return '<section class="panel composition"><h2>当前'+chartNames[metric]+'配置</h2>'+(!total?'<p class="muted">暂无'+chartNames[metric]+'数据</p>':
-      '<div class="allocation">'+allocationRing(ranked,total,chartNames[metric],ranked.map(([group])=>"assets?"+new URLSearchParams({owner:route().q.get("owner")||"family",group,metric,return:location.hash.slice(1)})))+'<div class="allocation-legend">'+ranked.map(([group,value],i)=>
+    const total=allocation.reduce((sum,entry)=>sum+entry[metric],0);
+    return '<section class="panel composition" data-composition="'+metric+'"><h2>当前'+label+'配置</h2>'+
+      (metric==="cash"&&entries.some(entry=>entry.cash<0)?'<p class="muted">现金合计和排行计入负余额。配置占比按正余额计算。</p>':"")+
+      (!total?'<p class="muted">暂无'+label+'配置数据</p>':
+      '<div class="allocation">'+allocationRing(ranked,total,label,ranked.map(([group])=>"assets?"+new URLSearchParams({owner:route().q.get("owner")||"family",group,metric,return:location.hash.slice(1)})))+'<div class="allocation-legend">'+ranked.map(([group,value],i)=>
         '<div class="legend-row"><span class="swatch tone-'+i%8+'"></span><span>'+h(group)+'</span><strong>'+money(value)+'</strong><span>'+ratio(value/total)+'</span></div>').join("")+'</div></div>')+
-      '<h3>'+chartNames[metric]+'排行榜</h3>'+(entries.length?'<ol class="asset-ranking">'+entries.map(e=>'<li><a href="#assets/'+(e.kind==="account"?"account":"detail")+'/'+e.id+'?return='+encodeURIComponent(location.hash.slice(1))+'">'+h(e.name)+'</a><strong>'+money(e[metric])+'</strong></li>').join("")+'</ol>':'<p class="muted">暂无记录</p>')+'</section>';
+      '<h3>'+label+'排行榜</h3>'+(entries.length?'<ol class="asset-ranking">'+entries.map(e=>'<li><div class="ranked-balance"><a href="#assets/'+(e.kind==="account"?"account":"detail")+'/'+e.id+'?return='+encodeURIComponent(location.hash.slice(1))+'">'+h(e.name)+'</a><strong>'+money(e[metric])+'</strong></div></li>').join("")+'</ol>':'<p class="muted">暂无记录</p>')+'</section>';
   }
   function chartView(owner,q) {
     const year=/^[0-9]{4}$/.test(q.get("year")||"")&&Number(q.get("year"))>0?Number(q.get("year")):new Date().getFullYear();
@@ -216,7 +244,7 @@ const AssetUI = (() => {
     }
     const values=report.months.map(m=>m[metric]);
     const rows=report.months.map(m=>'<tr><td>'+m.month+'月</td><td>'+(m[metric]==null?'尚未发生':money(m[metric]))+'</td></tr>').join("");
-    return '<section class="panel">'+controls+'<h2>'+year+'年'+chartNames[metric]+'走势图</h2><p class="muted">按月末记录重算，本月截至今天；未来月份留空。归属和期初配置修改后历史会重算。</p>'+
+    return '<section class="panel">'+controls+'<h2>'+year+'年'+(metric==="assets"?"总资产":chartNames[metric])+'走势图</h2><p class="muted">按月末记录重算，本月截至今天；未来月份留空。归属和期初配置修改后历史会重算。</p>'+
       trendChart(values,metric)+
       '<details><summary>查看每月金额</summary><table class="table"><thead><tr><th>月份</th><th>'+chartNames[metric]+'</th></tr></thead><tbody>'+rows+'</tbody></table></details></section>'+
       (metric==="net"?'<section class="panel"><h2>当前净资产状况</h2>'+metrics(report.current,{assets:"资产",debts:"负债",net:"净资产"})+
@@ -251,5 +279,5 @@ const AssetUI = (() => {
       '<rect class="peak-bubble" x="'+tipX+'" y="'+(peakY-44)+'" width="140" height="29" rx="8"/><text class="peak-label" x="'+(tipX+70)+'" y="'+(peakY-25)+'">'+money(peak.value)+'</text></svg></div>';
   }
   function mount() {}
-  return {ring:allocationRing,clear,home,view,accountForm,positionForm,assetFields,assetData,valueForm,physical,mount};
+  return {ring:allocationRing,clear,home,view,compositionEntries,accountForm,positionForm,assetFields,assetData,valueForm,physical,mount};
 })();

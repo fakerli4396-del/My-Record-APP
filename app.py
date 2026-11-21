@@ -19,6 +19,8 @@ import exchange
 import portfolio
 import recognition_repair
 import image_import
+import icon_import
+import attachments
 import planning
 import inventory
 import catalog
@@ -64,6 +66,7 @@ def initialize(path):
         image_import.ensure(db)
         planning.ensure(db)
         ledger.ensure_asset_fields(db)
+        attachments.ensure(db)
 
     with connect(path) as db:
         repairs=recognition_repair.plan(db)
@@ -174,8 +177,13 @@ class Handler(BaseHTTPRequestHandler):
     def files(self, data):
         action = data.get("action")
         path = self.server.database
+        if action == "read_bill_attachment":
+            with connect(path) as db:
+                return attachments.read(db, data.get("bill_id"), data.get("id"))
         if action == "recognize_image":
             return image_import.recognize(data)
+        if action == "split_icons":
+            return icon_import.split(data.get("content"))
         if action == "import_upload":
             return exchange.upload(path,data)
         if action == "export_data":
@@ -185,6 +193,18 @@ class Handler(BaseHTTPRequestHandler):
             if action=="import_restore":
                 self.server.token=secrets.token_urlsafe(32)
                 self.server.instance=secrets.token_urlsafe(18)
+            return result
+        if action == "reset":
+            if data.get("confirm") != "清空":
+                raise ValueError("请输入清空以确认")
+            import tempfile
+            with tempfile.TemporaryDirectory(dir=path.parent) as folder:
+                blank = Path(folder) / "blank.db"
+                initialize(blank)
+                preview = backups.preview(path, blank)
+                result = backups.restore(path, blank, preview["fingerprint"])
+            self.server.token = secrets.token_urlsafe(32)
+            self.server.instance = secrets.token_urlsafe(18)
             return result
         if action == "backup":
             return backups.create_backup(path, backups.user_path(data.get("path")))

@@ -143,6 +143,8 @@ dialog{background:#fffdf7;box-shadow:-10px 0 40px #322e2614;padding:26px;width:m
 .current-book{display:flex;gap:20px;align-items:end;flex-wrap:wrap}
 .current-book p{margin:0;padding-bottom:10px}
 .ocr-months{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.ocr-months label{min-width:0;grid-template-columns:minmax(0,1fr);align-content:end}
+.ocr-months input{width:100%;min-width:0}
 #recognized-rows fieldset{border:1px solid #e5d7bf;border-radius:14px;padding:14px;margin-bottom:18px;display:grid;gap:10px}
 .checkline{display:flex;align-items:center;gap:8px}
 #drawer pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}
@@ -275,6 +277,24 @@ select{border-radius:13px;background-color:#fffdf7}
 .calendar .cell small{font-size:clamp(.64rem,1.4vw,.95rem);font-variant-numeric:tabular-nums}
 .calendar .cell.today{border-color:#d67f9f;background:#fff5f8}
 .category-icon img{height:100%;width:100%;object-fit:cover;border-radius:inherit}
+.category-icon.imported-icon img{object-fit:contain;border-radius:0;padding:3px}
+.icon-field-label{display:block;margin-bottom:4px}
+.icon-field-control{display:flex;align-items:center;gap:8px;height:var(--control-height);padding-inline:8px;
+  border:1px solid #d9d9c8;border-radius:12px;background:var(--paper);list-style:none}
+.icon-field-control::-webkit-details-marker{display:none}
+.icon-field-control::after{content:"▾";margin-inline-start:auto}
+.icon-field details[open] .icon-field-control::after{content:"▴"}
+.icon-field-control>[data-icon-preview]{display:flex;flex:none}
+.icon-field-control .category-icon{width:36px;height:36px;margin:0}
+.icon-field [data-icon-options]{max-height:320px;overflow:auto;margin-top:8px;padding:8px;
+  border:1px solid #d9d9c8;border-radius:12px}
+.icon-field [data-icon-options] p{margin:8px 0 0;font-weight:600}
+.icon-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(68px,1fr));gap:8px;margin-top:8px}
+.icon-grid button,.icon-grid label{display:grid;justify-items:center;align-content:center;gap:4px;min-height:60px;margin:0;padding:5px}
+.icon-grid label{border:1px solid #d9d9c8;border-radius:8px}
+.icon-grid label:has(input:checked),.icon-grid button[aria-pressed=true]{background:#fff2ce;border-color:#b89148}
+.icon-grid .category-icon{margin:0;background:#fff;border-radius:8px}
+.icon-grid .category-icon img{object-fit:contain;border-radius:0}
 @media(max-width:660px){
   .calendar .cell{padding:4px 2px}
   .calendar-date{min-width:0;font-size:.9rem}
@@ -294,8 +314,15 @@ a:focus-visible,button:focus-visible,summary:focus-visible{
 .asset-row:hover,.asset-row:focus-visible,.holding-card:hover,.holding-card:focus-visible{
   background:var(--hover-surface);border-color:var(--hover-border);box-shadow:0 3px 12px #85663609
 }
-.asset-ranking{padding:0;list-style-position:inside}
+.asset-ranking{padding-inline-start:1.6rem;list-style-position:outside}
 .asset-ranking li{padding:16px!important;margin-block:7px;border:1px solid transparent}
+.ranked-balance{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:baseline;gap:12px}
+.ranked-balance a{overflow-wrap:anywhere}
+.bill-attachment-view{display:grid;gap:12px}
+.bill-attachment-view figure{margin:0;min-width:0}
+.bill-attachment-view figcaption{margin-bottom:4px;overflow-wrap:anywhere}
+.bill-attachment-view img{display:block;width:auto;max-width:100%;max-height:60vh;margin-inline:auto;object-fit:contain}
+.bill-attachment-view button{justify-self:end}
 .asset-ranking li:hover,.asset-ranking li:has(a:focus-visible),
 .rank-item:hover,.rank-item:focus-within,
 .category-line:has(button:hover){background:var(--hover-surface);border-color:var(--hover-border)}
@@ -303,7 +330,8 @@ a:focus-visible,button:focus-visible,summary:focus-visible{
 .asset-ranking strong{font-size:1.08rem;font-variant-numeric:tabular-nums}
 .rank-item{padding:16px!important;margin-block:7px;border:1px solid transparent}
 .board-name{display:block;padding:11px 12px;border:1px solid transparent;border-radius:12px;
-  font-size:1.05rem;white-space:normal;transition:background-color .16s,border-color .16s}
+  max-width:24ch; margin-inline:auto; font-size:1.05rem;white-space:normal;overflow-wrap:anywhere;
+  transition:background-color .16s,border-color .16s}
 .board-name:hover,.board-name:focus-visible{background:#fff0d4;border-color:var(--hover-border);color:var(--ink);text-decoration:none}
 .board-frame{border:1px solid #e8dfcc;border-radius:20px;overflow:auto;padding:6px;background:#fffefa}
 .loan-board{border-collapse:separate;border-spacing:0 7px}
@@ -348,3 +376,17 @@ main a:not(.button):not(.asset-row):not(.holding-card):not(.cell):not(.board-nam
 .book-symbol .category-icon{vertical-align:middle}
 @media(max-width:760px){.trend>div{grid-template-columns:1fr}.trend-module{grid-template-columns:minmax(6rem,auto) minmax(40px,1fr)}}
 @media(prefers-reduced-motion:reduce){.trend-module,.trend-module span,.trend-module progress,.ring-segment .slice{transition:none}}
+
+.board-selection{justify-content:center;flex-wrap:nowrap}
+.board-selection label{display:flex;align-items:center;gap:5px}
+.analysis-hit{fill:transparent}
+.analysis-point circle{transition:r .16s}
+.analysis-point:hover circle,.analysis-point:focus-visible circle{r:8;stroke-width:2}
+.analysis-tooltip{visibility:hidden;pointer-events:none}
+.analysis-tooltip rect{fill:#fff8ec;stroke:#d6b579}
+.analysis-tooltip text{fill:var(--ink);font-size:13px;font-weight:700}
+.analysis-point:hover .analysis-tooltip,.analysis-point:focus-visible .analysis-tooltip{visibility:visible}
+@media(prefers-reduced-motion:reduce){.analysis-point circle{transition:none}}
+
+.analysis-trend.trend-income{--color:#4c9479}
+.analysis-point{cursor:pointer}

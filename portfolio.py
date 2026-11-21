@@ -4,6 +4,7 @@ import calendar
 
 ACCOUNT_TYPES = {"cash": "现金", "bank": "储蓄卡", "credit": "信用卡", "wallet": "虚拟账户",
                  "investment_cash": "投资账户资金", "other": "其他资金账户"}
+CASH_ACCOUNT_TYPES = ("cash", "bank", "other")
 SUBTYPES = {"asset": {"property": "房产", "vehicle": "车辆", "custom": "自定义资产"},
             "invest": {"stock": "股票", "fund": "基金", "gold": "黄金", "deposit": "理财", "other": "其他投资"},
             "borrow": {"loan": "贷款", "payable": "应付款"},
@@ -127,6 +128,7 @@ def point(db, owner, cutoff):
                               (account["id"],cutoff)).fetchone()[0]
         balance = account["opening"] + outgoing + incoming
         entries.append(dict(kind="account",id=account["id"],name=account["name"],group=ACCOUNT_TYPES[account["account_type"]],
+                            cash=balance if account["account_type"] in CASH_ACCOUNT_TYPES else None,
                             assets=max(0,balance),debts=max(0,-balance)))
     for position in db.execute("SELECT * FROM positions WHERE owner=?",(owner,)):
         kind = position["kind"]
@@ -140,7 +142,8 @@ def point(db, owner, cutoff):
                             assets=0 if kind=="borrow" else value,debts=value if kind=="borrow" else 0))
     assets = sum(e["assets"] for e in entries)
     debts = sum(e["debts"] for e in entries)
-    return dict(day=cutoff,assets=assets,debts=debts,net=assets-debts,ratio=debts/assets if assets else None,entries=entries)
+    cash = sum(entry["cash"] for entry in entries if entry.get("cash") is not None)
+    return dict(day=cutoff,assets=assets,debts=debts,net=assets-debts,cash=cash,ratio=debts/assets if assets else None,entries=entries)
 
 
 def report(db, owner, year):

@@ -16,7 +16,7 @@ const monthOf = value => /^\d{4}-(0[1-9]|1[0-2])$/.test(value || "") && !value.s
 const btn = (id,label,primary=false) => '<button type="button" data-act="' + h(id) + '"' + (primary?' class="primary"':'') + '>' + h(label) + '</button>';
 const link = (href,label) => '<a class="button" href="#' + h(href) + '">' + h(label) + '</a>';
 const options = (values,selected) => values.map(([key,label]) => '<option value="' + h(key) + '"' + (String(key)===String(selected)?" selected":"") + '>' + h(label) + '</option>').join("");
-const iconChoices = () => Object.entries(state.category_icons).map(([key,icon])=>[key,icon]);
+const importedIconChoices = () => Object.keys(state.imported_icons || {}).map((key, index)=>[key,"导入图标 "+(index+1)]);
 const field = (label,content) => '<label>' + h(label) + content + '</label>';
 const select = (key,values,selected) => '<select name="' + key + '" required>' + options(values,selected) + '</select>';
 const input = (key,value="",attributes="") => {
@@ -97,15 +97,38 @@ async function saveAndRender(send, data, message) {
 }
 function bookForm(book) {
   openForm(book?"编辑账本":"新建账本",field("账本名称",input("name",book?.name,'required maxlength="80"'))+
-    field("账本图标",select("icon",[["default","📒"],...iconChoices()],state.book_icons[String(book?.id)]||"default"))+iconUpload(book),
+    iconField("账本图标","icon",state.book_icons[String(book?.id)]||"default",true)+iconUpload(book),
     async(d,send)=>saveAndRender(send,{action:"book",...(book?{id:book.id}:{}),name:d.name,icon:d.icon,...await iconData(d)}));
 }
 function accountForm(owner="personal",old) { return AssetUI.accountForm(owner,old); }
 function ask(title,message,onSave,label="确认") {
   openForm(title,"<p>"+h(message)+"</p>",(_,send)=>onSave(send),label);
 }
+function billAttachments(id){
+  return (state.bill_attachments||[]).filter(attachment=>attachment.bill_id===id);
+}
+function viewBillAttachments(id){
+  const items=billAttachments(Number(id));
+  drawer.innerHTML='<div class="bill-attachment-view"><h2>账单图片附件</h2>'+
+    items.map(item=>'<figure><figcaption>'+h(item.name)+'</figcaption><p role="status">正在加载图片…</p></figure>').join("")+
+    '<button type="button" data-close>关闭</button></div>';
+  drawer.querySelector("[data-close]").onclick=()=>drawer.close();
+  drawer.oncancel=null;
+  if(!drawer.open)drawer.showModal();
+  drawer.querySelectorAll("figure").forEach(async(figure,index)=>{
+    const item=items[index], status=figure.querySelector("[role=status]");
+    try {
+      const result=await api("/api/files",{action:"read_bill_attachment",bill_id:item.bill_id,id:item.id});
+      const image=document.createElement("img");
+      image.alt=item.name;
+      image.src="data:image/jpeg;base64,"+result.content;
+      status.replaceWith(image);
+    } catch(error) {status.textContent=error.message;}
+  });
+}
 function billForm(original,context={}) {
   const bill=original || {};
+  const existingImages=billAttachments(bill.id);
   const books=state.books.filter(b=>!b.archived || b.id===bill.book_id);
   const accountChoices=state.accounts.map(a=>[a.id,accountLabel(a)]);
   if (!books.length) { bookForm(); return; }
@@ -115,10 +138,22 @@ function billForm(original,context={}) {
     field("金额（元）",moneyInput("amount",bill.amount))+
     field("账本",select("book_id",books.map(b=>[b.id,b.name]),bill.book_id||context.book||state.current_book))+
     field("日期",input("day",bill.day || context.day || today(),'required type="date"'))+
-    '<div id="bill-fields"></div>'+field("备注",input("note",bill.note,'maxlength="500"')),
-    (d,send)=>saveAndRender(send,{action:"bill",...(original?{id:original.id}:{}),...d,amount:parseMoney(d.amount),
+    '<div id="bill-fields"></div>'+field("备注",input("note",bill.note,'maxlength="500"'))+
+    field("图片附件（选填）",'<input name="bill_images" type="file" accept="image/jpeg,image/png,image/webp" multiple aria-describedby="bill-images-help">')+
+    '<small id="bill-images-help">最多 3 张，每张不超过 3 MB，支持 JPG、PNG 和 WebP。</small>'+
+    existingImages.map(item=>'<label class="checkline"><input type="checkbox" name="remove_image" value="'+item.id+'">移除 '+h(item.name)+'</label>').join(""),
+    async(d,send)=>{
+      const {bill_images,remove_image,...fields}=d;
+      const files=[...form.elements.bill_images.files];
+      const removed=new FormData(form).getAll("remove_image").map(Number);
+      if(existingImages.length-removed.length+files.length>3)throw new Error("每笔账单最多保留 3 张图片");
+      if(files.some(file=>!file.size||file.size>3*1024*1024))throw new Error("请选择 3 MB 以内的非空图片");
+      const images=await Promise.all(files.map(async file=>({name:file.name,content:await fileBase64(file)})));
+      await saveAndRender(send,{action:"bill",...(original?{id:original.id}:{}),...fields,amount:parseMoney(d.amount),
       book_id:Number(d.book_id), account_id:Number(d.account_id),category_id:Number(d.category_id),
-      to_account_id:Number(d.to_account_id)},original && d.day!==original.day ? "已移至 "+d.day : ""));
+      to_account_id:Number(d.to_account_id),attachments:images,remove_attachments:removed},
+      original && d.day!==original.day ? "已移至 "+d.day : "");
+    });
   const fields=form.querySelector("#bill-fields");
   const populate=()=>{
     const kind=form.elements.kind.value, selected=fields.querySelector('[name="account_id"]')?.value || bill.account_id;
@@ -175,13 +210,17 @@ function calendarCell(day,path,stat,selected,n){
 }
 function billTable(list) {
   if (!list.length) return empty("没有符合条件的账单");
+  const counts=new Map();
+  for(const item of state.bill_attachments||[])counts.set(item.bill_id,(counts.get(item.bill_id)||0)+1);
   let current="";
   const body=list.map(b=>{
     const account=accountLabel(by(state.accounts,b.account_id));
     const description=b.kind==="transfer"?account+" → "+accountLabel(by(state.accounts,b.to_account_id)):account;
     const group=current===b.day?"":'<tr class="date-row"><th colspan="5">'+h(b.day)+'</th></tr>';
     current=b.day;
-    const controls=b.source_type?link("assets/"+b.source_type+"/"+b.source_id,"查看关联详情"):btn("edit:"+b.id,"编辑")+btn("del:"+b.id,"删除");
+    const count=counts.get(b.id);
+    const controls=(count?btn("billimages:"+b.id,"图片 "+count+" 张"):"")+
+      (b.source_type?link("assets/"+b.source_type+"/"+b.source_id,"查看关联详情"):btn("edit:"+b.id,"编辑")+btn("del:"+b.id,"删除"));
     return group+'<tr><td>'+categoryIcon(by(state.categories,b.category_id))+h(categoryLabel(by(state.categories,b.category_id)) || kinds[b.kind])+'<br><small>'+h(kinds[b.kind])+'</small></td><td>'+h(by(state.books,b.book_id)?.name)+'<br><small>'+h(description)+'</small></td>'+
       '<td class="'+h(b.kind)+'">'+money(b.amount)+'</td><td>'+h(b.note)+'</td><td>'+controls+'</td></tr>';
   }).join("");
@@ -232,35 +271,117 @@ function legacyStats(q) {
     monthly+'<div class="panel"><h2>支出类目排行</h2>'+(ranking?'<ol class="ranking">'+ranking+'</ol>':'<p class="muted">本月暂无支出</p>')+'</div>';
 }
 function categoryIcon(item) {
-  const image=item?.icon_image;
+  const imported=state.imported_icons?.[item?.icon];
+  const image=item?.icon_image||imported;
   const visual=image&&/^[A-Za-z0-9+/]+={0,2}$/.test(image)?
-    '<img src="data:image/png;base64,'+h(image)+'" alt="">':h(state.category_icons?.[item?.icon]||"🌿");
-  return '<span class="category-icon" aria-hidden="true">'+visual+'</span>';
+    '<img src="data:image/png;base64,'+h(image)+'" alt="">':h(item?.icon==="default"?"📒":state.category_icons?.[item?.icon]||"🌿");
+  return '<span class="category-icon'+(imported&&!item.icon_image?' imported-icon':'')+'" aria-hidden="true">'+visual+'</span>';
+}
+function iconField(label,key,selected,book=false){
+  return '<div class="icon-field"><span class="icon-field-label">'+h(label)+'</span>'+
+    input(key,selected,'type="hidden" data-icon-value')+
+    '<details data-icon-library'+(book?' data-book-icons':'')+'><summary class="icon-field-control" aria-label="'+h(label)+'，选择图标">'+
+    '<span data-icon-preview>'+categoryIcon({icon:selected})+'</span><span>选择图标</span></summary>'+
+    '<div data-icon-options></div></details></div>';
+}
+drawer.addEventListener("toggle",event=>{
+  const library=event.target;
+  if(!library.matches("[data-icon-library]")||!library.open)return;
+  const options=library.querySelector("[data-icon-options]");
+  if(!options.childElementCount){
+    const imported=importedIconChoices();
+    const preset=[...(library.hasAttribute("data-book-icons")?[["default","默认账本图标"]]:[]),...Object.entries(state.category_icons)];
+    const grid=(label,choices)=>'<div role="group" aria-label="'+label+'"><p>'+label+'</p><div class="icon-grid">'+
+      choices.map(([key,name])=>'<button type="button" data-icon-choice="'+h(key)+'" aria-label="'+h(name)+'">'+
+        categoryIcon({icon:key})+'</button>').join("")+'</div></div>';
+    options.innerHTML=(imported.length?grid("导入的图标",imported):"")+grid("预设图标",preset);
+  }
+  const selected=library.closest(".icon-field").querySelector("[data-icon-value]").value;
+  options.querySelectorAll("[data-icon-choice]").forEach(button=>button.setAttribute("aria-pressed",button.dataset.iconChoice===selected));
+},true);
+drawer.addEventListener("click",event=>{
+  const choice=event.target.closest("[data-icon-choice]");
+  if(!choice)return;
+  const field=choice.closest(".icon-field");
+  field.querySelector("[data-icon-value]").value=choice.dataset.iconChoice;
+  field.querySelector("[data-icon-preview]").innerHTML=categoryIcon({icon:choice.dataset.iconChoice});
+  const library=choice.closest("[data-icon-library]");
+  library.open=false;
+  library.querySelector("summary").focus();
+});
+drawer.addEventListener("keydown",event=>{
+  const library=event.target.closest("[data-icon-library][open]");
+  if(event.key!=="Escape"||!library)return;
+  event.preventDefault();
+  library.open=false;
+  library.querySelector("summary").focus();
+});
+function fileBase64(file){
+  return new Promise((resolve,reject)=>{
+    const reader=new FileReader();
+    reader.onload=()=>resolve(String(reader.result).split(",")[1]);
+    reader.onerror=()=>reject(new Error("无法读取图片"));
+    reader.readAsDataURL(file);
+  });
 }
 function iconUpload(item){
   return field("上传自定义图标",'<input name="icon_file" type="file" accept="image/png,image/jpeg,image/webp">')+
     '<small>PNG、JPG 或 WebP，最大 1 MB</small>'+
     (item?.icon_image?'<div class="row">'+categoryIcon(item)+
-      '<label class="checkline"><input type="checkbox" name="remove_icon">恢复为预设图标</label></div>':"");
+      '<label class="checkline"><input type="checkbox" name="remove_icon">使用所选图标</label></div>':"");
 }
 async function iconData(data){
   const file=data.icon_file;
   if(file?.size){
     if(file.size>1024*1024)throw new Error("请选择小于 1 MB 的图标图片");
-    const content=await new Promise((resolve,reject)=>{
-      const reader=new FileReader();
-      reader.onload=()=>resolve(String(reader.result).split(",")[1]);
-      reader.onerror=()=>reject(new Error("无法读取图标图片"));
-      reader.readAsDataURL(file);
-    });
-    return {icon_image:content};
+    return {icon_image:await fileBase64(file)};
   }
   return data.remove_icon?{icon_image:""}:{};
+}
+function importIconForm(){
+  const form=openForm("批量导入图标",
+    field("图标合集或独立图标",'<input name="sheets" type="file" accept="image/png,image/jpeg,image/webp" multiple required>')+
+    '<p>支持 PNG、JPG、WebP，每张不超过 10 MB。图标之间留有空隙时可自动切分。</p><p data-icon-progress role="status"></p>',
+    async()=>{
+      const files=[...form.elements.sheets.files], icons=[], errors=[];
+      const progress=form.querySelector("[data-icon-progress]");
+      if(files.length>240)throw new Error("每批最多选择 240 张图片");
+      for(const [index,file] of files.entries()){
+        progress.textContent="正在识别 "+(index+1)+" / "+files.length;
+        try{
+          if(file.size>10*1024*1024)throw new Error("图片超过 10 MB");
+          const result=await api("/api/files",{action:"split_icons",content:await fileBase64(file)});
+          icons.push(...result.icons);
+        }catch(error){errors.push(file.name+"："+error.message);}
+        if(icons.length>240){
+          progress.textContent="";
+          throw new Error("每批最多导入 240 个图标，请减少图片数量");
+        }
+      }
+      progress.textContent="";
+      if(!icons.length)throw new Error(errors.join("　")||"没有识别到图标");
+      setTimeout(()=>reviewIcons(icons,errors),0);
+    },"识别并切分");
+}
+function reviewIcons(icons,errors){
+  const form=openForm("核对切分结果",
+    '<p>识别到 '+icons.length+' 个图标。取消勾选可跳过不需要的图标。</p>'+
+    (errors.length?'<ul>'+errors.map(error=>'<li>'+h(error)+'</li>').join("")+'</ul>':"")+
+    '<div class="icon-grid icon-import-grid">'+icons.map((image,index)=>'<label><input type="checkbox" name="keep" value="'+index+
+      '" checked aria-label="导入图标 '+(index+1)+'">'+categoryIcon({icon_image:image})+'<small>'+(index+1)+'</small></label>').join("")+'</div>',
+    async(_,send)=>{
+      const selected=new FormData(form).getAll("keep").map(index=>icons[Number(index)]);
+      if(!selected.length)throw new Error("请至少选择一个图标");
+      const result=await send({action:"import_icons",icons:selected});
+      await refresh();render();
+      const skipped=selected.length-result.id;
+      setTimeout(()=>flash("已导入 "+result.id+" 个图标"+(skipped?"，跳过 "+skipped+" 个重复图标":"")),0);
+    },"确认导入");
 }
 function viewCategories(q) {
   const kind=q.get("kind")==="income"?"income":"expense";
   const list=state.categories.filter(c=>c.kind===kind);
-  const controls=c=>btn("catrename:"+c.id,"改名")+btn("cattoggle:"+c.id,c.enabled?"停用":"启用");
+  const controls=c=>btn("catrename:"+c.id,"编辑")+btn("cattoggle:"+c.id,c.enabled?"停用":"启用");
   const line=c=>'<div class="category-line"><span>'+categoryIcon(c)+h(c.name)+'</span><div class="toolbar">'+controls(c)+'</div></div>';
   const group=c=>{
     const children=list.filter(k=>k.parent_id===c.id), active=children.filter(k=>k.enabled), off=children.filter(k=>!k.enabled);
@@ -269,24 +390,25 @@ function viewCategories(q) {
       (off.length?'<details><summary>已停用的二级类目</summary>'+off.map(line).join("")+'</details>':"")+'</details>';
   };
   const roots=list.filter(c=>!c.parent_id), off=roots.filter(c=>!c.enabled);
-  return heading("收支类目","管理两级分类",btn("catnew:"+kind,"新建一级类目",true))+
+  return heading("收支类目","管理两级分类",btn("iconimport","批量导入图标")+btn("catnew:"+kind,"新建一级类目",true))+
     '<div class="row">'+link("categories?kind=income","收入")+link("categories?kind=expense","支出")+'</div>'+
     '<div class="category-grid">'+roots.filter(c=>c.enabled).map(group).join("")+'</div>'+(off.length?'<details class="panel"><summary>已停用的一级类目</summary>'+off.map(group).join("")+'</details>':"");
 }
 function categoryForm(kind,parent,old) {
-  openForm(old?"修改类目名称":parent?"在「"+parent.name+"」下添加类目":"新建"+kinds[kind]+"类目",
+  openForm(old?"编辑类目":parent?"在「"+parent.name+"」下添加类目":"新建"+kinds[kind]+"类目",
     field("类目名称",input("name",old?.name,'required maxlength="80"'))+
-      field("图标",select("icon",Object.entries(state.category_icons).map(([key,symbol])=>[key,symbol]),old?.icon||parent?.icon||"other"))+iconUpload(old),
+      iconField("图标","icon",old?.icon||parent?.icon||"other")+iconUpload(old),
     async(d,send)=>saveAndRender(send,{action:"category",name:d.name,icon:d.icon,kind,...await iconData(d),...(parent?{parent_id:parent.id}:{}),...(old?{id:old.id}:{})}));
 }
 const assetTabs={accounts:"资金账户",asset:"资产",invest:"投资",borrow:"借入",lend:"借出"};
-const eventLabels={origin:"初始本金",repay:"本金与利息",buy:"投入",redeem:"赎回",valuation:"更新市值",yield:"到账收益"};
+const eventLabels={origin:"初始本金",repay:"本金与利息",principal_balance:"剩余本金调整",buy:"投入",redeem:"赎回",valuation:"更新市值",yield:"到账收益"};
 function assetURL(owner,tab) { return "assets"+filterRoute({owner,tab}); }
 function viewAssets(q,sub,id) {
   if(q.has("group")&&!sub){
-    const owner=q.get("owner")==="personal"?"personal":"family",metric=q.get("metric")==="debts"?"debts":"assets";
-    const entries=state.portfolio[owner].current.entries.filter(e=>e.group===q.get("group")&&e[metric]>0);
-    return heading(q.get("group")+" · 分类明细",owners[owner],link(detailReturn(assetURL(owner,"charts")),"返回图表"))+
+    const owner=q.get("owner")==="personal"?"personal":"family";
+    const metric=["cash","debts"].includes(q.get("metric"))?q.get("metric"):"assets";
+    const entries=AssetUI.compositionEntries(state.portfolio[owner].current,metric).filter(e=>e.group===q.get("group")&&e[metric]>0);
+    return heading(q.get("group")+" · 分类明细",owners[owner],link(detailReturn(assetURL(owner,metric==="cash"?"cash":"charts")),"返回配置"))+
       '<section class="panel">'+entries.map(e=>'<a class="asset-row" href="#assets/'+(e.kind==="account"?"account":"detail")+'/'+e.id+'?return='+encodeURIComponent(location.hash.slice(1))+'"><strong>'+h(e.name)+'</strong><strong>'+money(e[metric])+'</strong></a>').join("")+'</section>';
   }
   return '<div class="asset-module">'+AssetUI.view(q,sub,id)+'</div>';
@@ -295,17 +417,19 @@ function tabLink(url,label,current) {
   return '<a class="button'+(current?' active':'')+'" '+(current?'aria-current="true" ':'')+'href="#'+h(url)+'">'+h(label)+'</a>';
 }
 function viewPosition(p) {
-  const title=heading(p.name,owners[p.owner]+" · "+assetTabs[p.kind],link(detailReturn(assetURL(p.owner,p.kind)),"返回列表")+btn("posedit:"+p.id,"编辑"));
+  const title=heading(p.name,owners[p.owner]+" · "+assetTabs[p.kind],link(detailReturn(assetURL(p.owner,p.kind)),"返回列表")+
+    btn("posedit:"+p.id,"编辑")+(p.kind==="asset"?btn("deleteasset:"+p.id,"删除资产"):"")+
+    (["borrow","lend"].includes(p.kind)?btn("moveloan:"+p.id,"转到"+owners[p.owner==="family"?"personal":"family"]):""));
   if (p.kind==="asset") return title+positionMeta(p)+AssetUI.physical(p);
   const invest=p.kind==="invest";
   const amounts=invest?metrics(p,{cost:"剩余成本",market:"当前市值",unrealized:"浮动盈亏",realized:"已实现盈亏",earnings:"到账收益"}):
-    metrics(p,{cost:"剩余本金",earnings:p.kind==="borrow"?"累计已付利息":"累计已收利息"});
+    metrics({...p,cost:WorkspaceUI.remainingPrincipal(p)},{cost:p.kind==="lend"?"账务剩余本金":"剩余本金",earnings:p.kind==="borrow"?"累计已付利息":"累计已收利息"});
   const buttons=invest?["buy","redeem","valuation","yield"].map(type=>btn("event:"+p.id+":"+type,eventLabels[type])).join(""):
-    btn("event:"+p.id+":repay",p.kind==="borrow"?"记还款":"记收款",true);
+    btn("event:"+p.id+":repay",p.kind==="borrow"?"记还款":"记收款",true)+btn("loanprincipal:"+p.id,p.kind==="lend"?"设置账务本金":"设置剩余本金")+btn("deleteloan:"+p.kind+":"+p.id,"删除项目");
   const header='<tr><th>日期</th><th>类型</th><th>金额 / 本金</th><th>到账 / 利息</th><th>账本与账户</th><th>备注</th><th>操作</th></tr>';
   const history=p.events.slice().reverse().map(e=>'<tr><td>'+h(e.day)+'</td><td>'+h(eventLabels[e.kind])+'</td><td>'+money(e.principal)+'</td><td>'+
     (["repay","redeem"].includes(e.kind)?money(e.extra):"")+'</td><td>'+h(by(state.books,e.book_id)?.name)+'<br><small>'+h(accountLabel(by(state.accounts,e.account_id)))+
-    '</small></td><td>'+h(e.note)+'</td><td>'+btn("eventedit:"+p.id+":"+e.id,"编辑")+
+    '</small></td><td>'+h(e.note)+'</td><td>'+(e.kind==="principal_balance"?"":btn("eventedit:"+p.id+":"+e.id,"编辑"))+
     (e.kind==="origin"?"":btn("eventdel:"+e.id,"删除"))+'</td></tr>').join("");
   return title+positionMeta(p)+(!invest?WorkspaceUI.paymentSchedule(p):"")+'<div class="panel">'+amounts+(p.due?'<p>到期日 '+h(p.due)+'</p>':"")+'</div><div class="row">'+buttons+'</div>'+
     (history?'<div class="panel"><table class="table"><thead>'+header+'</thead><tbody>'+history+'</tbody></table></div>':empty("暂无业务记录"));
@@ -334,13 +458,14 @@ function fundingFields(old={}) {
 function positionForm(owner,kind,old) { return AssetUI.positionForm(owner,kind,old); }
 function eventForm(p,kind,old) {
   const cash=kind!=="valuation"&&!old?.opening_only, extra=kind==="redeem"||kind==="repay";
+  const allowZero=kind==="valuation"||kind==="repay"||(kind==="origin"&&Boolean(old?.opening_only));
   const label={repay:"本次归还或收回本金",redeem:"本次收回成本",valuation:"当前市值",origin:"初始本金",buy:"投入金额",yield:"到账收益"}[kind];
   openForm((old?"编辑":"登记")+eventLabels[kind],field("日期",input("day",old?.day||today(),'type="date" required'))+
     field(label+"（元）",moneyInput("principal",old?.principal ?? (kind==="repay"?0:undefined)))+
     (extra?field((kind==="repay"?"利息":"实际到账金额")+"（元）",moneyInput("extra",old?.extra ?? (kind==="repay"?0:undefined))):"")+
     (cash?fundingFields(old):"")+field("备注",input("note",old?.note,"maxlength=500")),
     (d,send)=>saveAndRender(send,{...d,action:"finance_event",position_id:p.id,event_kind:kind,...(old?{id:old.id}:{}),
-      principal:parseMoney(d.principal,false,kind==="valuation"||kind==="repay"),extra:extra?parseMoney(d.extra,false,true):0,
+      principal:parseMoney(d.principal,false,allowZero),extra:extra?parseMoney(d.extra,false,true):0,
       book_id:Number(d.book_id),account_id:Number(d.account_id)}));
 }
 function viewSettings() {
@@ -348,7 +473,18 @@ function viewSettings() {
     '<div class="panel"><h2>本地数据文件</h2><code>'+h(session.database)+'</code><p>最近成功备份 '+h(state.last_backup || "暂无")+'</p></div>'+
     '<div class="grid settings-cards"><section class="panel"><h2>创建备份</h2><p>将所有账本、流水和资产记录保存到指定目录。</p>'+
     '<div class="toolbar">'+btn("backup","创建完整 .db 备份",true)+btn("exportdata","选择范围与格式导出")+'</div></section><section class="panel"><h2>导入 / 恢复</h2><p>支持 .db、.xlsx、.xls。选择文件后先预览，确认后替换当前全部数据，并先自动备份当前版本。</p>'+
-    '<div class="toolbar">'+btn("restore","选择备份文件")+'</div></section></div>';
+    '<div class="toolbar">'+btn("restore","选择备份文件")+'</div></section></div>'+
+    '<section class="panel"><h2>一键还原</h2><p>清空全部本地记录并恢复预设分类。清空前自动创建完整备份，可在「导入 / 恢复」中选用。</p>'+btn("resetdata","一键还原（清空数据）")+'</section>';
+}
+function resetDataForm() {
+  openForm("一键还原",'<p>所有账本、流水、账户和资产记录都将清空。继续前，应用会创建可导入的完整备份。</p>'+
+    field("请输入「清空」确认",input("confirm","","required maxlength=2")),async data=>{
+      const result=await api("/api/files",{action:"reset",confirm:data.confirm});
+      session=await api("/api/session");
+      await refresh();
+      render();
+      flash("已清空数据。备份："+result.backup);
+    },"确认清空");
 }
 function fileForm(restoring) {
   const title=restoring?"选择备份文件":"选择备份目录";
@@ -417,7 +553,17 @@ function render() {
   const views={home:viewHome,bills:WorkspaceUI.bills,stats:WorkspaceUI.stats,categories:viewCategories,
     assets:viewAssets,inventory:InventoryUI.view,
     settings:viewSettings};
+  const boardScroll=page.querySelector(".board-frame");
+  const boardKey=boardScroll?.dataset.boardKey;
+  const scrollLeft=boardScroll?.scrollLeft;
+  const atRightEdge=boardScroll && scrollLeft>0 && boardScroll.scrollWidth-boardScroll.clientWidth-scrollLeft<=2;
+  const scrollTop=window.scrollY;
   page.innerHTML=Object.hasOwn(views,key) ? views[key](q,id,month) : viewHome();
+  const newBoard=page.querySelector(".board-frame");
+  if(newBoard && newBoard.dataset.boardKey===boardKey){
+    newBoard.scrollLeft=atRightEdge?newBoard.scrollWidth:scrollLeft;
+    window.scrollTo(0,scrollTop);
+  }
   AssetUI.mount();InventoryUI.mount();
   const currentBook=page.querySelector('[name="current_book"]');
   if(currentBook)currentBook.onchange=async()=>{
@@ -441,15 +587,30 @@ function quick() {
   billForm(null,{book:key==="book"?id:(q.get("book")||state.current_book),day});
 }
 actions={
+  billimages:viewBillAttachments,
+  iconimport:importIconForm,
   imageimport:(owner,kind)=>ImageImportUI.start(owner,kind),
   exportdata:()=>WorkspaceUI.exchange(),budget:(book,month)=>WorkspaceUI.budgetForm(book,month),loanplan:id=>WorkspaceUI.loanForm(id),
+  loanprincipal:id=>WorkspaceUI.principalForm(id),
+  moveloan:id=>WorkspaceUI.moveLoan(id),
   newbook:()=>bookForm(), rename:id=>bookForm(by(state.books,id)), quick, newaccount:owner=>accountForm(owner),
   edit:id=>billForm(by(state.bills,id)),
   assetimage:owner=>ImageImportUI.startAsset(owner),
-  deleteloan:(kind,id)=>WorkspaceUI.deleteLoan(kind,id),
+  deleteloan:(kind,id)=>WorkspaceUI.deleteLoan(kind,[id]),
+  deletechecked:kind=>WorkspaceUI.deleteLoan(kind,[...page.querySelectorAll("[data-board-item]:checked")].map(box=>box.value)),
+  resetdata:resetDataForm,
   accountedit:id=>accountForm(by(state.accounts,id).owner,by(state.accounts,id)),
   creditpay:id=>creditPayment(by(state.accounts,id)),
   value:id=>AssetUI.valueForm(by(state.positions,id)),
+  deleteasset:id=>{
+    const p=by(state.positions,id);
+    ask("删除资产","删除「"+p.name+"」及其估值历史？资产概览会重新计算。",async send=>{
+      await send({action:"delete_asset",id:p.id});
+      await refresh();
+      location.hash=assetURL(p.owner,"asset");
+      render();
+    },"确认删除");
+  },
   valueedit:(id,valueID)=>AssetUI.valueForm(by(state.positions,id),by(state.asset_values,valueID)),
   valuedel:id=>ask("删除估值","删除后将按照剩余估值记录重新计算。",
     send=>saveAndRender(send,{action:"delete_value",id:Number(id)}),"删除"),
@@ -488,6 +649,7 @@ page.onclick=event=>{
 };
 page.addEventListener("change",event=>{
   const control=event.target;
+  if(control.matches("[data-board-all],[data-board-item]")) WorkspaceUI.updateSelection(control);
   if(control.matches("[data-paid-id]")) WorkspaceUI.markPaid(control);
   if(!control.dataset.calendarMonth||!control.value||!control.validity.valid)return;
   const {parts,q}=route();

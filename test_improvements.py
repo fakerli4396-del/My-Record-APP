@@ -43,12 +43,12 @@ class ImprovementsTests(unittest.TestCase):
     def test_image_review_import_atomic_retry_and_backup(self):
         book,_,_=self.baseline()
         data=dict(book_id=book,owner="family",kind="borrow",year=2026,day="2026-11-19",items=[
-            dict(name="京东金条",mode="loan",principal=2780545,annual_rate="3",months=[0]*4+[660096,670264]+[0]*6),
+            dict(name="示例分期甲",mode="loan",principal=3212345,annual_rate="3",months=[0]*4+[123456,234567]+[0]*6),
             dict(name="计划费用",mode="plan",principal=None,annual_rate="",months=[10000]*12)])
         result=self.post("image_import",**data)
         self.assertEqual(self.post("image_import",**data),result)
         state=self.state()
-        self.assertEqual(state["portfolio"]["family"]["current"]["debts"],2780545)
+        self.assertEqual(state["portfolio"]["family"]["current"]["debts"],3212345)
         self.assertEqual(len(state["forecast_items"]),1)
         self.assertEqual(len(state["bills"]),0)
         bad=json.loads(json.dumps(data));bad["items"][0]["name"]="新行";bad["items"][1]["months"][0]=None
@@ -65,15 +65,15 @@ class ImprovementsTests(unittest.TestCase):
         font=ImageFont.truetype("C:/Windows/Fonts/simhei.ttf",32)
         for x,text in [(20,"年化"),(160,"项目"),(420,"我的欠款"),(720,"5月应还"),(1050,"6月应还"),(1380,"7月应还")]:
             draw.text((x,20),text,font=font,fill="black")
-        for y,name,p,a,b,c in [(100,"京东金条","27805.45","6600.96","6702.64","6830.29"),(175,"支付宝借呗","184809","297","405","419")]:
+        for y,name,p,a,b,c in [(100,"示例分期甲","32123.45","1234.56","2345.67","3456.78"),(175,"示例借款乙","23456","297","405","419")]:
             for x,text in [(20,"3%"),(160,name),(420,p),(720,a),(1050,b),(1380,c)]:
                 draw.text((x,y),text,font=font,fill="black")
         file=self.path.parent/"ocr.png";image.save(file)
         result=image_import.recognize(dict(content=base64.b64encode(file.read_bytes()).decode()))
         self.assertEqual(len(result["items"]),2,result)
         first=result["items"][0]
-        self.assertEqual(first["principal"],2780545,result)
-        self.assertEqual(first["months"][4:7],[660096,670264,683029],result)
+        self.assertEqual(first["principal"],3212345,result)
+        self.assertEqual(first["months"][4:7],[123456,234567,345678],result)
         self.assertEqual(first["annual_rate"],"3",result)
 
     def test_asset_screenshot_parser_uses_purchase_price_and_holding_days(self):

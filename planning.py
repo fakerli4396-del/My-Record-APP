@@ -84,6 +84,16 @@ def month(value):
         raise ValueError("月份无效")
     return value
 
+def yearly_amounts(data):
+    import ledger
+    year = data.get("year")
+    if type(year) is not int or not 1 <= year <= 9999:
+        raise ValueError("年份无效")
+    amounts = data.get("months")
+    if not isinstance(amounts, list) or len(amounts) != 12:
+        raise ValueError("请填写全年12个月计划")
+    return year, [ledger.cents(value, 0) for value in amounts]
+
 def save(db,data):
     import ledger
     if data["action"]=="budget":
@@ -100,10 +110,7 @@ def save(db,data):
     rate=str(data.get("annual_rate","")).strip()
     if rate and (not re.fullmatch(r"[0-9]{1,7}(\.[0-9]{1,4})?",rate) or float(rate)>1200000):
         raise ValueError("年化利率无效")
-    entries=data.get("months")
-    if not isinstance(entries,list) or len(entries)!=12: raise ValueError("请填写全年12个月计划")
-    year=data.get("year")
-    if type(year)!=int or not 1<=year<=9999: raise ValueError("年份无效")
+    year, entries = yearly_amounts(data)
     table="credit_plans" if credit else "loan_plans"
     installments="credit_installments" if credit else "installments"
     db.execute("INSERT OR REPLACE INTO "+table+" VALUES (?,?,?)",(p["id"],None,rate))
@@ -111,5 +118,5 @@ def save(db,data):
         columns="account_id" if credit else "position_id"
         db.execute("INSERT INTO "+installments+"("+columns+",month,amount) VALUES (?,?,?) "
                    "ON CONFLICT("+columns+",month) DO UPDATE SET amount=excluded.amount",
-                   (p["id"],str(year).zfill(4)+"-"+str(i+1).zfill(2),ledger.cents(value,0)))
+                   (p["id"],str(year).zfill(4)+"-"+str(i+1).zfill(2),value))
     return p["id"]

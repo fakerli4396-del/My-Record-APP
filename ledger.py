@@ -5,6 +5,8 @@ import json
 import portfolio
 import catalog
 import image_import
+import icon_import
+import attachments
 import planning
 import inventory
 
@@ -127,9 +129,12 @@ def save_bill(db, data):
     if old:
         db.execute("""UPDATE bills SET book_id=?,day=?,kind=?,amount=?,account_id=?,to_account_id=?,
                       category_id=?,note=? WHERE id=?""", (*values, existing))
-        return existing
-    return db.execute("""INSERT INTO bills(book_id,day,kind,amount,account_id,to_account_id,category_id,note)
-                         VALUES (?,?,?,?,?,?,?,?)""", values).lastrowid
+    else:
+        existing = db.execute("""INSERT INTO bills(book_id,day,kind,amount,account_id,to_account_id,category_id,note)
+                                 VALUES (?,?,?,?,?,?,?,?)""", values).lastrowid
+    if "attachments" in data or "remove_attachments" in data:
+        attachments.update(db, existing, data)
+    return existing
 
 
 def rows(db, query, params=()):
@@ -161,22 +166,22 @@ def save_asset_fields(db,key,data):
         price=cents(price,0)
     if purchase is not None and purchase>date.today().isoformat():
         raise ValueError("购买日期不能晚于今天")
-    icon=one_of(data.get("asset_icon"),catalog.ICONS)
+    icon=validate_icon(db, data.get("asset_icon"))
     loan=data.get("has_loan")
     if type(loan) is not bool:
         raise ValueError("请选择是否有贷款")
+    previous = find(db, "positions", key)["asset_icon"]
     db.execute("UPDATE positions SET purchase_price=?,purchase_day=?,asset_icon=?,has_loan=? WHERE id=?",
                (price,purchase,icon,loan,key))
-    save_icon_image(db,"positions",key,data)
+    save_icon_image(db,"positions",key,data,reset=icon != previous)
 
 
-def delete_loan(db,key,kind):
-    position=find(db,"positions",key)
-    if position["kind"]!=kind:
-        raise ValueError("请选择对应的借贷项目")
+def delete_position(db, key, kind):
+    if find(db, "positions", key)["kind"] != kind:
+        raise ValueError("请选择对应类型的项目")
     db.execute("""DELETE FROM bills WHERE source_type='position'
                   AND source_id IN (SELECT id FROM finance_events WHERE position_id=?)""",(key,))
-    for table in ("installments","loan_plans","finance_events"):
+    for table in ("asset_values","installments","loan_plans","finance_events"):
         db.execute("DELETE FROM "+table+" WHERE position_id=?",(key,))
     for record in db.execute("SELECT id,records FROM inventories").fetchall():
         items=json.loads(record["records"])
@@ -187,10 +192,41 @@ def delete_loan(db,key,kind):
     return key
 
 
+def set_loan_principal(db, data):
+    key = data.get("id")
+    amount = cents(data.get("principal"), 0)
+    effective_day = date.today().isoformat()
+    if data.get("forecast") is True:
+        forecast = find(db, "forecast_items", key)
+        position_id = write_position(db, dict(kind=forecast["kind"], owner=forecast["owner"],
+            name=forecast["name"], principal=amount, day=effective_day, opening_only=True))
+        planning.save(db, dict(action="loan_plan", position_id=position_id, year=forecast["year"],
+            annual_rate=forecast["annual_rate"], months=json.loads(forecast["months"])))
+        db.executemany("UPDATE installments SET paid=1 WHERE position_id=? AND month=?",
+            [(position_id, month) for month in json.loads(forecast["paid_months"])])
+        db.execute("DELETE FROM forecast_items WHERE id=?", (key,))
+        return position_id
+    position = find(db, "positions", key)
+    if position["kind"] not in ("borrow", "lend"):
+        raise ValueError("请选择借入或借出项目")
+    current = position_financials(db, position, effective_day)
+    if not current["events"]:
+        raise ValueError("初始本金登记日期尚未到达")
+    if current["cost"] != amount:
+        db.execute("""INSERT INTO finance_events(position_id,kind,day,principal,note)
+                      VALUES (?,'principal_balance',?,?,?)""", (key, effective_day, amount, note(data)))
+        position_financials(db, position)
+    return key
+
+
 def write_position(db, data):
     key = data.get("id")
     old = find(db, "positions", key) if key is not None else None
     kind = old["kind"] if old else one_of(data.get("kind"), ("asset","invest","borrow","lend"))
+    yearly_lend = old is None and kind == "lend" and "months" in data
+    if yearly_lend:
+        _, amounts = planning.yearly_amounts(data)
+        data = dict(data, principal=cents(sum(amounts), 0), opening_only=True)
     owner = one_of(data.get("owner"), ("family","personal"))
     due = day(data["due"]) if data.get("due") and kind in ("borrow","lend") else None
     value = cents(data.get("value",old["value"] if old else 0), 0) if kind == "asset" else 0
@@ -219,7 +255,9 @@ def write_position(db, data):
         portfolio.save_value(db,dict(position_id=key,day=data.get("day",date.today().isoformat()),value=value,note=data.get("note","")))
     if kind=="asset" and "purchase_day" in data:
         save_asset_fields(db,key,data)
-    if kind in ("borrow","lend") and not old and "term_months" in data:
+    if yearly_lend:
+        planning.save(db, dict(data, action="loan_plan", position_id=key, account_id=None))
+    elif kind in ("borrow","lend") and not old and "term_months" in data:
         planning.create_loan_schedule(db,key,data)
     return key
 
@@ -242,6 +280,10 @@ def position_financials(db, position, cutoff=None):
                 raise ValueError("还款日期或本金超出该日的剩余本金")
             cost -= amount
             profit += extra
+        elif kind == "principal_balance":
+            if not opened:
+                raise ValueError("余额调整日期不能早于初始本金登记日期")
+            cost = amount
         elif kind == "buy":
             cost += amount
             current += amount
@@ -288,15 +330,16 @@ def write_event(db, data):
     choices = ("origin","repay") if position["kind"] in ("borrow","lend") else (
         ("buy","redeem","yield","valuation") if position["kind"]=="invest" else ())
     kind = one_of(old["kind"] if old else data.get("event_kind"), choices)
-    amount = cents(data.get("principal"), 0 if kind in ("repay","valuation") else 1)
     extra = cents(data.get("extra",0),0) if kind in ("redeem","repay") else 0
-    if kind=="repay" and not (amount or extra):
-        raise ValueError("本金和利息至少填写一项金额")
     opening_only = old["opening_only"] if old else data.get("opening_only",False)
     if type(opening_only) not in (bool,int) or opening_only not in (0,1):
         raise ValueError("期初债务模式无效")
     if kind not in ("origin","buy"):
         opening_only = False
+    allow_zero = kind in ("repay", "valuation") or (kind == "origin" and opening_only)
+    amount = cents(data.get("principal"), 0 if allow_zero else 1)
+    if kind=="repay" and not (amount or extra):
+        raise ValueError("本金和利息至少填写一项金额")
     book, account = (None,None) if kind=="valuation" or opening_only else scope(db, data, old)
     date_value, memo = day(data.get("day")), note(data)
     values = (date_value,book,account,amount,extra,memo)
@@ -330,6 +373,7 @@ def delete_event(db, key):
 
 def snapshot(db):
     return {
+        "bill_attachments":attachments.metadata(db),
         "credit_plans":planning.rows(db,"credit_plans"),
         "credit_installments":planning.rows(db,"credit_installments"),
         "budgets":planning.rows(db,"budgets"),
@@ -339,6 +383,7 @@ def snapshot(db):
         "forecast_items":planning.rows(db,"forecast_items"),
         "current_book":(db.execute("SELECT value FROM settings WHERE key='current_book'").fetchone() or [None])[0],
         "category_icons":catalog.ICONS,
+        "imported_icons":icon_import.library(db),
         "book_icons":{r[0][10:]:r[1] for r in db.execute("SELECT key,value FROM settings WHERE key GLOB 'book_icon_*'")},
         "last_backup": (db.execute("SELECT value FROM settings WHERE key='last_backup'").fetchone() or [None])[0],
         "asset_values": rows(db,"SELECT * FROM asset_values ORDER BY day DESC,id DESC"),
@@ -358,10 +403,17 @@ def snapshot(db):
     }
 
 
-def save_icon_image(db,table,key,data):
-    if "icon_image" not in data:
+def validate_icon(db, value, default=False):
+    if isinstance(value, str) and (value in catalog.ICONS or (default and value == "default") or
+            db.execute("SELECT 1 FROM settings WHERE key=?", (icon_import.KEY_PREFIX + value,)).fetchone()):
+        return value
+    raise ValueError("请选择有效的图标")
+
+
+def save_icon_image(db,table,key,data,reset=False):
+    if "icon_image" not in data and not reset:
         return
-    source=data["icon_image"]
+    source=data.get("icon_image", "")
     if source=="":
         thumbnail=""
     else:
@@ -373,11 +425,11 @@ def save_category(db, data):
     key = data.get("id")
     label = name(data.get("name"))
     old = find(db,"categories",key) if key is not None else None
-    icon = one_of(data.get("icon",old["icon"] if old else "other"),catalog.ICONS)
+    icon = validate_icon(db, data.get("icon",old["icon"] if old else "other"))
     if key is not None:
         find(db, "categories", key)
         db.execute("UPDATE categories SET name=?,icon=? WHERE id=?", (label,icon,key))
-        save_icon_image(db,"categories",key,data)
+        save_icon_image(db,"categories",key,data,reset=icon != old["icon"])
         return key
     kind = one_of(data.get("kind"), ("income", "expense"))
     parent_id = data.get("parent_id")
@@ -406,6 +458,8 @@ def mutate(db, data):
         return key
     if operation == "image_import":
         return image_import.apply(db,data)
+    if operation == "import_icons":
+        return icon_import.save(db, data.get("icons"))
     if operation == "current_book":
         book=find(db,"books",data.get("book_id"))
         if book["archived"]: raise ValueError("请选择使用中的账本")
@@ -418,13 +472,56 @@ def mutate(db, data):
         else:
             find(db,"books",key)
             db.execute("UPDATE books SET name=? WHERE id=?",(label,key))
+        reset_icon_image = False
         if "icon" in data:
+            setting = "book_icon_" + str(key)
+            previous = db.execute("SELECT value FROM settings WHERE key=?", (setting,)).fetchone()
+            icon = validate_icon(db, data["icon"], default=True)
+            reset_icon_image = icon != (previous[0] if previous else "default")
             db.execute("INSERT OR REPLACE INTO settings VALUES (?,?)",
-                       ("book_icon_"+str(key),one_of(data["icon"],{"default",*catalog.ICONS})))
-        save_icon_image(db,"books",key,data)
+                       (setting, icon))
+        save_icon_image(db,"books",key,data,reset=reset_icon_image)
         return key
-    if operation in ("delete_borrow","delete_lend"):
-        return delete_loan(db,key,operation.removeprefix("delete_"))
+    if operation == "move_loan":
+        kind = one_of(data.get("kind"), ("borrow", "lend"))
+        source = one_of(data.get("owner"), ("family", "personal"))
+        target = one_of(data.get("target"), ("family", "personal"))
+        forecast = data.get("forecast")
+        if type(forecast) is not bool or source == target:
+            raise ValueError("请选择另一种借贷归属")
+        table = "forecast_items" if forecast else "positions"
+        row = find(db, table, key)
+        if row["kind"] != kind or row["owner"] != source:
+            raise ValueError("借贷项目已变更，请刷新后重试")
+        db.execute(f"UPDATE {table} SET owner=? WHERE id=?", (target, key))
+        return key
+    if operation == "delete_loans":
+        kind = one_of(data.get("kind"), ("borrow", "lend"))
+        owner = one_of(data.get("owner"), ("family", "personal"))
+        entries = data.get("entries")
+        if not isinstance(entries, list) or not 1 <= len(entries) <= 2000:
+            raise ValueError("请选择要删除的借贷项目")
+        seen = set()
+        for entry in entries:
+            if not isinstance(entry, dict) or type(entry.get("id")) is not int or type(entry.get("forecast")) is not bool:
+                raise ValueError("借贷项目无效")
+            key = entry["id"]
+            table = "forecast_items" if entry["forecast"] else "positions"
+            if (table, key) in seen:
+                raise ValueError("借贷项目重复")
+            seen.add((table, key))
+            row = find(db, table, key)
+            if row["kind"] != kind or row["owner"] != owner:
+                raise ValueError("请选择当前看板中的借贷项目")
+            if entry["forecast"]:
+                db.execute("DELETE FROM forecast_items WHERE id=?", (key,))
+            else:
+                delete_position(db, key, kind)
+        return len(entries)
+    if operation in ("delete_asset","delete_borrow","delete_lend"):
+        return delete_position(db,key,operation.removeprefix("delete_"))
+    if operation == "loan_principal":
+        return set_loan_principal(db, data)
     if operation in ("delete_borrow_forecast","delete_lend_forecast"):
         kind=operation.split("_")[1]
         if find(db,"forecast_items",key)["kind"]!=kind:

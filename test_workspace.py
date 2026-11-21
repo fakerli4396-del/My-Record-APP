@@ -16,6 +16,36 @@ class WorkspaceTests(unittest.TestCase):
     spending=support.LocalAppTests.spending
     file_action=support.LocalAppTests.file_action
 
+    def test_reset_requires_confirmation_and_backup_restores_records(self):
+        book,_,account=self.baseline()
+        self.post("bill",**self.spending(book,account))
+        token=self.app.token
+        with self.assertRaises(HTTPError):
+            self.post("reset",endpoint="files",confirm="")
+        self.assertEqual(len(self.state()["bills"]),1)
+        result=self.post("reset",endpoint="files",confirm="清空")
+        self.assertNotEqual(self.app.token,token)
+        for key in ("books","accounts","bills","positions","forecast_items"):
+            self.assertEqual(self.state()[key],[])
+        self.assertTrue(self.state()["categories"])
+        preview=self.post("import_preview",endpoint="files",path=result["backup"])
+        self.post("import_restore",endpoint="files",path=result["backup"],fingerprint=preview["fingerprint"])
+        self.assertEqual(len(self.state()["bills"]),1)
+
+    def test_bulk_loan_delete_rolls_back_an_invalid_selection(self):
+        position=self.post("position",kind="lend",owner="personal",name="样例借出",principal=10000,
+                           opening_only=True,day="2026-01-01")["id"]
+        self.post("image_import",owner="personal",kind="lend",year=2026,day="2026-01-01",
+                  items=[dict(name="样例计划",mode="plan",principal=None,annual_rate="",months=[100]*12)])
+        forecast=self.state()["forecast_items"][0]["id"]
+        entries=[dict(id=position,forecast=False),dict(id=forecast,forecast=True)]
+        with self.assertRaises(HTTPError):
+            self.post("delete_loans",kind="lend",owner="personal",entries=[entries[0],dict(id=999,forecast=True)])
+        self.assertEqual(len(self.state()["positions"]),1)
+        self.post("delete_loans",kind="lend",owner="personal",entries=entries)
+        self.assertEqual(self.state()["positions"],[])
+        self.assertEqual(self.state()["forecast_items"],[])
+
     def test_budget_schedule_and_all_formats_round_trip(self):
         book,other,account=self.baseline()
         self.post("bill",**self.spending(book,account))
@@ -76,7 +106,7 @@ class WorkspaceTests(unittest.TestCase):
                 self.assertEqual([r[0] for r in db.execute("SELECT owner FROM positions")],[owner])
 
     def test_unassigned_borrow_schedule_paid_status_and_delete(self):
-        key=self.post("position",kind="borrow",owner="family",name="京东金条",day="2026-11-19",
+        key=self.post("position",kind="borrow",owner="family",name="示例分期甲",day="2026-11-19",
                       opening_only=True,principal=100000,total_interest=10001,
                       term_months=4,first_month="2026-12",monthly_payment=27500)["id"]
         current=self.state()

@@ -1,3 +1,5 @@
+import base64
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -10,7 +12,73 @@ from urllib.request import Request, urlopen
 from uuid import uuid4
 from unittest.mock import patch
 
-from app import Application, connect
+from app import Application, connect, initialize
+import attachments
+import backups
+import exchange
+import ledger
+
+
+class BillAttachmentTests(unittest.TestCase):
+    def setUp(self):
+        from PIL import Image
+
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.path = Path(temp.name) / "record.db"
+        initialize(self.path)
+        self.book = self.action("book", name="样例账本")
+        self.account = self.action("account", name="样例账户", owner="personal", opening=0,
+                                   opening_day="2026-01-01")
+        image = io.BytesIO()
+        Image.new("RGB", (32, 64), "blue").save(image, format="PNG")
+        self.image = {"name": "收据.png", "content": base64.b64encode(image.getvalue()).decode("ascii")}
+        self.bill = dict(book_id=self.book, account_id=self.account, kind="expense", category_id=6,
+                         amount=100, day="2026-01-01")
+
+    def action(self, action, request_id=None, **values):
+        with connect(self.path) as db:
+            return ledger.action(db, dict(action=action, request_id=request_id or uuid4().hex, **values))["id"]
+
+    def state(self):
+        with connect(self.path) as db:
+            return ledger.snapshot(db)
+
+    def test_retry_attachment_validation_and_delete_are_transactional(self):
+        request_id = uuid4().hex
+        bill = self.action("bill", request_id=request_id, attachments=[self.image], **self.bill)
+        self.assertEqual(self.action("bill", request_id=request_id, attachments=[self.image], **self.bill), bill)
+        before = self.state()
+        attachment, = before["bill_attachments"]
+        self.assertNotIn("image", attachment)
+        with connect(self.path) as db:
+            content = attachments.read(db, bill, attachment["id"])["content"]
+            self.assertTrue(base64.b64decode(content).startswith(b"\xff\xd8"))
+            with self.assertRaises(ValueError):
+                attachments.read(db, bill + 1, attachment["id"])
+        with self.assertRaises(ValueError):
+            self.action("bill", id=bill, remove_attachments=[attachment["id"]],
+                        attachments=[{"name": "invalid.png", "content": "AAAA"}], **self.bill)
+        self.assertEqual(self.state(), before)
+        self.action("bill", id=bill, remove_attachments=[attachment["id"]], attachments=[self.image], **self.bill)
+        updated, = self.state()["bill_attachments"]
+        self.assertEqual(updated["bill_id"], bill)
+        self.assertNotEqual(updated["id"], attachment["id"])
+        self.action("delete_bill", id=bill)
+        self.assertEqual(self.state()["bill_attachments"], [])
+
+    def test_backup_restore_and_filtered_database_export_keep_the_right_images(self):
+        included = self.action("bill", attachments=[self.image], **self.bill)
+        other = self.action("book", name="另一账本")
+        self.action("bill", attachments=[self.image], **dict(self.bill, book_id=other))
+        backup = Path(backups.create_backup(self.path, self.path.parent)["path"])
+        selected = Path(exchange.export(self.path, dict(format="db", owner="none",
+                        book=str(self.book), path=str(self.path.parent)))["path"])
+        with connect(selected) as db:
+            self.assertEqual([item["bill_id"] for item in attachments.metadata(db)], [included])
+        self.action("delete_bill", id=included)
+        backups.restore(self.path, backup, backups.preview(self.path, backup)["fingerprint"])
+        self.assertEqual(len(self.state()["bill_attachments"]), 2)
 
 
 class LocalAppTests(unittest.TestCase):

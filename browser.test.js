@@ -171,10 +171,12 @@ test("Windows browser: record, reconcile, navigate, back up and restore with all
     await action("newbook"); await fill({name:"个人账本"}); await submit();
     await goto("assets?owner=personal&tab=accounts","个人资产概览");
     await action("newaccount:personal"); await fill({name:"银行卡",opening:"1000.00",opening_day:"2026-01-01"}); await submit();
-    await goto("assets?owner=personal&tab=overview","当前资产配置");
+    await goto("assets?owner=personal&tab=cash","当前现金配置");
     assert.match(await evaluate("document.querySelector('.allocation-ring').textContent"),/100.0%/);
     assert.equal(await evaluate("document.querySelector('.ring-total').textContent"),"¥1,000.00");
     assert.equal(await evaluate("document.querySelector('.slice').getAttribute('stroke-dasharray')"),"100 0");
+    await goto("assets?owner=personal&tab=overview","当前资产配置");
+    assert.equal(await evaluate("Boolean(document.querySelector('[data-composition=assets] .asset-ranking'))"),false);
     await goto("home","首页总览");
     step="current book defaults";
     for(const id of ["2","1"]){
@@ -193,9 +195,18 @@ test("Windows browser: record, reconcile, navigate, back up and restore with all
     assert.equal(await evaluate("document.querySelectorAll('dialog .category-picker button').length >= 30"),true);
     assert.equal(await evaluate("document.querySelector('dialog [name=day]').value"),dayPath.split("/").at(-1));
     await fill({amount:"200.00",category_id:"6",note:"超市购物"});
+    await evaluate(`(()=>{
+      const png=atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aDioAAAAASUVORK5CYII=");
+      const files=new DataTransfer();
+      files.items.add(new File([Uint8Array.from(png,c=>c.charCodeAt(0))],"样例收据.png",{type:"image/png"}));
+      document.querySelector('dialog [name=bill_images]').files=files.files;
+    })()`);
     await submit();
     await visible("超市购物");
     assert.match(await text(),/200\.00/);
+    await click('[data-act^="billimages:"]');
+    await waitFor(()=>evaluate("Boolean(document.querySelector('dialog figure img')?.naturalWidth)"),"attachment decoded");
+    await click("dialog [data-close]");
     await click('a[href="'+dayPath.split("/").slice(0,-1).join("/")+'"]');
     await visible("月历");
     assert.match(await evaluate("document.querySelector("+JSON.stringify('.cell[href="'+dayPath+'"]')+").innerText"),/200\.00/);
@@ -250,8 +261,15 @@ test("Windows browser: record, reconcile, navigate, back up and restore with all
     await goto("assets?owner=family&tab=borrow","负债明细看板");
     await action("loanplan:"+loanID);assert.equal(await evaluate("document.querySelector('dialog [name=book_id]')===null"),true);await fill({annual_rate:"3.5",m0:"100"});await submit();
     assert.match(await text(),/3.5%/);
+    await click(".board-name");
+    await visible("每月应还");
+    await action("loanprincipal:"+loanID);
+    assert.equal(await evaluate("document.querySelector('dialog [name=principal]').value"),"1000.00");
+    await fill({principal:"750.25"});await submit();
+    assert.equal(await evaluate("state.portfolio.family.current.debts"),75025);
+    await goto("assets?owner=family&tab=borrow","负债明细看板");
     assert.equal(await evaluate("document.querySelectorAll('.board-content button').length"),0);
-    assert.equal(await evaluate("document.querySelector('.loan-board thead th:last-child').textContent"),"操作");
+    assert.match(await evaluate("document.querySelector('.loan-board thead th:last-child').textContent"),/批量删除/);
     assert.ok(await evaluate("[...document.querySelectorAll('.loan-board th,.loan-board td')].every(e=>getComputedStyle(e).textAlign==='center'&&getComputedStyle(e).verticalAlign==='middle')"));
     const boardAlignment=await evaluate(`(()=>{
       const form=document.querySelector('.board-controls'),controls=[...form.querySelectorAll('input:not([type=hidden]),select,button')].map(e=>e.getBoundingClientRect());
@@ -266,12 +284,20 @@ test("Windows browser: record, reconcile, navigate, back up and restore with all
     await goto("assets?owner=personal&tab=lend","借款应收看板");
     assert.equal(await evaluate("document.querySelector('.board-controls [name=book]')===null"),true);
     await action("newpos:personal:lend");
-    await fill({name:"借出分期",principal:"100",total_interest:"10",term_months:"2"});
+    await fill({name:"借出分期",m0:"50.25",m1:"60.10"});
     await submit();
     await visible("每月应收");
     await click("[data-paid-id]");
     await waitFor(()=>evaluate("Boolean(document.querySelector('.payment-card.is-paid input:checked'))"),"received month highlighted");
     await goto("assets?owner=personal&tab=lend","借款应收看板");
+    assert.equal(await evaluate("state.positions.find(p=>p.name==='借出分期').cost"),11035);
+    assert.equal(await evaluate("document.querySelector('.loan-board thead tr').cells[2].textContent"),"全年合计");
+    assert.equal(await evaluate("document.querySelector('.loan-board tbody tr').cells[2].textContent"),"¥110.35");
+    await click('[data-act^="moveloan:"]');await submit();
+    await waitFor(()=>evaluate("route().q.get('owner')==='family'"),"moved to family");
+    assert.equal(await evaluate("Boolean(document.querySelector('.loan-board .is-paid'))"),true);
+    await click('[data-act^="moveloan:"]');await submit();
+    await waitFor(()=>evaluate("route().q.get('owner')==='personal'"),"moved to personal");
     await click('[data-act^="deleteloan:lend:"]');
     await submit();
     assert.ok(!(await text()).includes("借出分期"));
@@ -299,6 +325,13 @@ test("Windows browser: record, reconcile, navigate, back up and restore with all
     await action("assetimage:personal");
     assert.ok(await evaluate("document.querySelector('dialog [name=image]').accept.includes('image/png')"));
     await click("dialog [data-close]");
+    await click(".holding-card");
+    await visible("估值历史");
+    await click('[data-act^="valuedel:"]');await submit();
+    await visible("暂无估值记录");
+    await click('[data-act^="deleteasset:"]');await submit();
+    await visible("暂无资产记录");
+    assert.equal(await evaluate("state.positions.some(p=>p.name==='浏览器测试房产')"),false);
     await goto("assets?owner=family&tab=borrow","负债明细看板");
     await action("imageimport:family:borrow");
     assert.ok(await evaluate("document.querySelector('#ocr-file').accept.includes('image/png')"));

@@ -4,3 +4,16 @@ __pycache__/
 *.db-*
 
 .runtime-deps/
+
+# Local data, exports, and private notes
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+MyRecord-*.xls
+MyRecord-*.xlsx
+/restore-backups/
+/upgrade-backups/
+/recognition-repair-backups/
+/改进.md
+/dist/

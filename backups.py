@@ -17,6 +17,7 @@ import image_import
 import planning
 import inventory
 import catalog
+import attachments
 
 
 def user_path(value):
@@ -79,6 +80,7 @@ def upgrade_copy(path):
         image_import.ensure(db)
         planning.ensure(db)
         ledger.ensure_asset_fields(db)
+        attachments.ensure(db)
         recognition_repair.apply(db,recognition_repair.plan(db))
 
 
